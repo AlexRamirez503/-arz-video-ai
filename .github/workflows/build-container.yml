@@ -6,6 +6,7 @@ on:
     paths:
       - "Dockerfile"
       - "requirements-api.txt"
+      - "requirements-wan.txt"
       - "server/**"
       - ".github/workflows/build-container.yml"
   workflow_dispatch:

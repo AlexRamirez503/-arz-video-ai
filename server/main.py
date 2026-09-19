@@ -1,3 +1,4 @@
+import gc
 import os
 import queue
 import re
@@ -9,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
+from typing import Literal, Optional
 
 import cv2
 import requests
@@ -25,6 +26,14 @@ API_TOKEN = os.getenv("API_TOKEN", "")
 PORT = int(os.getenv("API_PORT", "8000"))
 BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "8"))
 FPS = int(os.getenv("MUSETALK_FPS", "25"))
+WAN_HOME = Path(os.getenv("WAN_HOME", "/opt/Wan2.1")).resolve()
+WAN_PYTHON = Path(os.getenv("WAN_PYTHON", "/opt/wan-venv/bin/python")).resolve()
+WAN_MODEL_DIR = Path(
+    os.getenv("WAN_MODEL_DIR", "/data/models/Wan2.1-T2V-1.3B")
+).resolve()
+WAN_MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B")
+WAN_MODEL_MARKER = WAN_MODEL_DIR / ".download-complete"
+WAN_MODEL_MIN_FREE_GB = int(os.getenv("WAN_MODEL_MIN_FREE_GB", "12"))
 
 JOBS_DIR = DATA_DIR / "jobs"
 SOURCES_DIR = DATA_DIR / "sources"
@@ -44,6 +53,7 @@ jobs = {}
 jobs_lock = threading.Lock()
 job_queue = queue.Queue()
 avatar_cache = {}
+wan_lock = threading.Lock()
 engine_ready = False
 rt = None
 
@@ -52,6 +62,24 @@ class GenerateRequest(BaseModel):
     text: str = Field(min_length=1, max_length=3000)
     avatar_id: str = Field(default="default", min_length=1, max_length=40)
     avatar_url: Optional[HttpUrl] = None
+
+
+class PromoRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=800)
+    person_prompt: str = Field(
+        default=(
+            "a friendly young adult presenter in modern casual clothing, "
+            "looking directly at the camera"
+        ),
+        min_length=3,
+        max_length=800,
+    )
+    brand_text: str = Field(default="AZTV", min_length=1, max_length=80)
+    cta_text: str = Field(default="Descárgala hoy", max_length=120)
+    logo_url: Optional[HttpUrl] = None
+    orientation: Literal["vertical", "landscape"] = "vertical"
+    steps: int = Field(default=28, ge=20, le=50)
+    seed: int = Field(default=-1, ge=-1)
 
 
 def require_auth(authorization: Optional[str] = Header(default=None)):
@@ -85,6 +113,9 @@ def get_job(job_id: str):
 
 def init_engine():
     global rt, engine_ready
+
+    if engine_ready and rt is not None:
+        return
 
     import scripts.realtime_inference as realtime
     from musetalk.utils.audio_processor import AudioProcessor
@@ -148,6 +179,25 @@ def init_engine():
     )
 
     engine_ready = True
+
+
+def release_musetalk_engine():
+    global rt, engine_ready
+
+    avatar_cache.clear()
+    if rt is not None:
+        for name in ("vae", "unet", "pe", "whisper", "fp", "audio_processor"):
+            if hasattr(rt, name):
+                setattr(rt, name, None)
+    rt = None
+    engine_ready = False
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
 
 def avatar_base(avatar_id: str) -> Path:
@@ -247,6 +297,274 @@ def synthesize_speech(text: str, output_wav: Path):
     subprocess.run(cmd, input=text, text=True, check=True)
 
 
+def wan_model_ready() -> bool:
+    return WAN_MODEL_MARKER.exists()
+
+
+def ensure_wan_model(job_id: str):
+    if wan_model_ready():
+        return
+
+    WAN_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    free_bytes = shutil.disk_usage(WAN_MODEL_DIR.parent).free
+    required = WAN_MODEL_MIN_FREE_GB * 1024 * 1024 * 1024
+    if free_bytes < required:
+        free_gb = free_bytes / (1024 ** 3)
+        raise RuntimeError(
+            f"Wan2.1 needs at least {WAN_MODEL_MIN_FREE_GB} GB free before the "
+            f"first model download; only {free_gb:.1f} GB is available"
+        )
+
+    set_job(job_id, stage="downloading_video_model")
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        repo_id=WAN_MODEL_ID,
+        local_dir=str(WAN_MODEL_DIR),
+        max_workers=4,
+    )
+    WAN_MODEL_MARKER.write_text(WAN_MODEL_ID + "\n")
+
+
+def build_person_prompt(person_prompt: str) -> str:
+    return (
+        "Photorealistic commercial social-media advertisement video. "
+        f"One {person_prompt}. "
+        "The presenter faces the camera and speaks naturally with small expressive "
+        "hand gestures, natural head movement, blinking and subtle body movement. "
+        "Medium shot, stable camera, one continuous shot, clean modern background, "
+        "realistic skin and hands, professional advertising lighting. "
+        "No subtitles, no logos, no text, no scene cuts, no extra people."
+    )
+
+
+def run_wan_video(
+    job_id: str,
+    person_prompt: str,
+    orientation: str,
+    steps: int,
+    seed: int,
+) -> Path:
+    with wan_lock:
+        release_musetalk_engine()
+        ensure_wan_model(job_id)
+        set_job(job_id, stage="generating_person_video")
+
+        size = "480*832" if orientation == "vertical" else "832*480"
+        output = SOURCES_DIR / f"{job_id}-wan.mp4"
+        log_path = JOBS_DIR / f"{job_id}-wan.log"
+        prompt = build_person_prompt(person_prompt)
+
+        cmd = [
+            str(WAN_PYTHON),
+            str(WAN_HOME / "generate.py"),
+            "--task", "t2v-1.3B",
+            "--size", size,
+            "--ckpt_dir", str(WAN_MODEL_DIR),
+            "--offload_model", "True",
+            "--t5_cpu",
+            "--sample_shift", "8",
+            "--sample_guide_scale", "6",
+            "--sample_steps", str(steps),
+            "--frame_num", "81",
+            "--prompt", prompt,
+            "--save_file", str(output),
+        ]
+        if seed >= 0:
+            cmd.extend(["--base_seed", str(seed)])
+
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = "0"
+        env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        env["OMP_NUM_THREADS"] = "4"
+
+        with log_path.open("w") as log:
+            result = subprocess.run(
+                cmd,
+                cwd=str(WAN_HOME),
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=5400,
+            )
+
+        if result.returncode != 0 or not output.exists():
+            tail = ""
+            try:
+                tail = log_path.read_text(errors="replace")[-3000:]
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Wan2.1 video generation failed. Last log output: " + tail
+            )
+        return output
+
+
+def prepare_avatar_from_local(avatar_id: str, source: Path):
+    init_engine()
+    normalized = SOURCES_DIR / f"{avatar_id}.mp4"
+    normalize_avatar(source, normalized)
+
+    base = avatar_base(avatar_id)
+    if base.exists():
+        shutil.rmtree(base)
+
+    avatar = rt.Avatar(
+        avatar_id=avatar_id,
+        video_path=str(normalized),
+        bbox_shift=0,
+        batch_size=BATCH_SIZE,
+        preparation=True,
+    )
+    avatar_cache[avatar_id] = avatar
+    return avatar
+
+
+def _download_logo(url: str, target: Path):
+    with requests.get(url, stream=True, timeout=(15, 60)) as response:
+        response.raise_for_status()
+        total = 0
+        with target.open("wb") as f:
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > 20 * 1024 * 1024:
+                    raise RuntimeError("logo file is larger than 20 MB")
+                f.write(chunk)
+
+
+def apply_branding(
+    source: Path,
+    output: Path,
+    brand_text: str,
+    cta_text: str,
+    logo_url: Optional[str],
+    job_id: str,
+):
+    font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    brand_file = JOBS_DIR / f"{job_id}-brand.txt"
+    cta_file = JOBS_DIR / f"{job_id}-cta.txt"
+    brand_file.write_text(brand_text, encoding="utf-8")
+    cta_file.write_text(cta_text, encoding="utf-8")
+    logo_path = SOURCES_DIR / f"{job_id}-logo"
+
+    top_text = (
+        f"drawtext=fontfile={font}:textfile={brand_file}:"
+        "fontcolor=white:fontsize=h/12:x=24:y=24:"
+        "box=1:boxcolor=black@0.45:boxborderw=10"
+    )
+    cta_filter = (
+        f"drawtext=fontfile={font}:textfile={cta_file}:"
+        "fontcolor=white:fontsize=h/22:x=(w-text_w)/2:y=h-text_h-30:"
+        "box=1:boxcolor=black@0.55:boxborderw=10"
+    )
+    filters = ",".join([top_text, cta_filter]) if cta_text else top_text
+
+    try:
+        if logo_url:
+            _download_logo(logo_url, logo_path)
+            complex_filter = (
+                "[1:v]scale=160:-1[logo];"
+                "[0:v][logo]overlay=W-w-24:24[base];"
+                f"[base]{filters}[v]"
+            )
+            cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(source), "-i", str(logo_path),
+                "-filter_complex", complex_filter,
+                "-map", "[v]", "-map", "0:a?",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+                str(output),
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(source),
+                "-vf", filters,
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+                str(output),
+            ]
+        subprocess.run(cmd, check=True)
+    finally:
+        brand_file.unlink(missing_ok=True)
+        cta_file.unlink(missing_ok=True)
+        logo_path.unlink(missing_ok=True)
+
+
+def run_promo_job(job_id: str, payload: dict):
+    set_job(job_id, status="running", stage="preparing")
+    wav_path = JOBS_DIR / f"{job_id}.wav"
+    lip_path = JOBS_DIR / f"{job_id}-lipsync.mp4"
+    final_path = JOBS_DIR / f"{job_id}.mp4"
+    wan_video = None
+
+    try:
+        wan_video = run_wan_video(
+            job_id=job_id,
+            person_prompt=payload["person_prompt"],
+            orientation=payload["orientation"],
+            steps=payload["steps"],
+            seed=payload["seed"],
+        )
+
+        set_job(job_id, stage="loading_lipsync")
+        avatar_id = f"promo-{job_id[:16]}"
+        avatar = prepare_avatar_from_local(avatar_id, wan_video)
+
+        set_job(job_id, stage="synthesizing_speech")
+        synthesize_speech(payload["text"], wav_path)
+
+        set_job(job_id, stage="syncing_lips")
+        avatar.inference(
+            audio_path=str(wav_path),
+            out_vid_name=job_id,
+            fps=FPS,
+            skip_save_images=False,
+        )
+        produced = avatar_base(avatar_id) / "vid_output" / f"{job_id}.mp4"
+        if not produced.exists():
+            raise RuntimeError("MuseTalk did not create the expected promo MP4")
+        shutil.copy2(produced, lip_path)
+
+        set_job(job_id, stage="adding_brand")
+        apply_branding(
+            source=lip_path,
+            output=final_path,
+            brand_text=payload["brand_text"],
+            cta_text=payload["cta_text"],
+            logo_url=payload.get("logo_url"),
+            job_id=job_id,
+        )
+
+        set_job(
+            job_id,
+            status="done",
+            stage="done",
+            finished_at=time.time(),
+            video_path=str(final_path),
+            video_endpoint=f"/jobs/{job_id}/video",
+        )
+        cleanup_outputs()
+    except Exception as exc:
+        set_job(
+            job_id,
+            status="error",
+            stage="error",
+            finished_at=time.time(),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        wav_path.unlink(missing_ok=True)
+        lip_path.unlink(missing_ok=True)
+        if wan_video is not None:
+            wan_video.unlink(missing_ok=True)
+
+
 def cleanup_outputs(keep: int = 30):
     files = sorted(JOBS_DIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in files[keep:]:
@@ -259,8 +577,12 @@ def run_one_job(job_id: str, payload: dict):
     final_path = JOBS_DIR / f"{job_id}.mp4"
 
     try:
+        set_job(job_id, stage="loading_lipsync")
+        init_engine()
+        set_job(job_id, stage="synthesizing_speech")
         synthesize_speech(payload["text"], wav_path)
         avatar = ensure_avatar(payload["avatar_id"], payload.get("avatar_url"))
+        set_job(job_id, stage="syncing_lips")
 
         avatar.inference(
             audio_path=str(wav_path),
@@ -301,14 +623,16 @@ def worker_loop():
     while True:
         job_id, payload = job_queue.get()
         try:
-            run_one_job(job_id, payload)
+            if payload.get("kind") == "promo":
+                run_promo_job(job_id, payload)
+            else:
+                run_one_job(job_id, payload)
         finally:
             job_queue.task_done()
 
 
 @app.on_event("startup")
 def startup():
-    init_engine()
     threading.Thread(target=worker_loop, name="arz-video-worker", daemon=True).start()
 
 
@@ -325,10 +649,12 @@ def root():
 @app.get("/health")
 def health():
     return {
-        "ok": engine_ready,
+        "ok": True,
         "cuda": torch.cuda.is_available(),
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "queued_jobs": job_queue.qsize(),
+        "musetalk_loaded": engine_ready,
+        "wan_model_ready": wan_model_ready(),
     }
 
 
@@ -359,6 +685,7 @@ def create_job(request: GenerateRequest):
 
     job_id = uuid.uuid4().hex
     payload = {
+        "kind": "avatar",
         "text": request.text.strip(),
         "avatar_id": avatar_id,
         "avatar_url": avatar_url,
@@ -369,6 +696,38 @@ def create_job(request: GenerateRequest):
         status="queued",
         created_at=time.time(),
         avatar_id=avatar_id,
+    )
+    job_queue.put((job_id, payload))
+    return {
+        "id": job_id,
+        "status": "queued",
+        "status_endpoint": f"/jobs/{job_id}",
+        "video_endpoint": f"/jobs/{job_id}/video",
+    }
+
+
+@app.post("/promos", status_code=202, dependencies=[Depends(require_auth)])
+def create_promo(request: PromoRequest):
+    job_id = uuid.uuid4().hex
+    payload = {
+        "kind": "promo",
+        "text": request.text.strip(),
+        "person_prompt": request.person_prompt.strip(),
+        "brand_text": request.brand_text.strip(),
+        "cta_text": request.cta_text.strip(),
+        "logo_url": str(request.logo_url) if request.logo_url else None,
+        "orientation": request.orientation,
+        "steps": request.steps,
+        "seed": request.seed,
+    }
+    set_job(
+        job_id,
+        id=job_id,
+        kind="promo",
+        status="queued",
+        stage="queued",
+        created_at=time.time(),
+        brand_text=request.brand_text.strip(),
     )
     job_queue.put((job_id, payload))
     return {

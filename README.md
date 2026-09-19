@@ -4,8 +4,10 @@ Generador propio de videos de personas hablando, preparado para desplegarse con 
 
 ## Qué incluye
 
+- Wan2.1 T2V-1.3B para generar desde cero un presentador en movimiento.
 - MuseTalk 1.5 para sincronización de labios.
 - Piper TTS con voz `es_MX-ald-medium` para español.
+- Branding final con FFmpeg (texto AZTV, CTA y logo opcional).
 - FastAPI para controlar el generador por API.
 - Cola de trabajos de una sola GPU para evitar saturar la RTX 3060.
 - Caché de avatares: la primera preparación tarda más; los siguientes videos reutilizan el avatar.
@@ -28,7 +30,12 @@ API_TOKEN=<un-token-secreto-largo>
 MUSETALK_BATCH_SIZE=8
 MUSETALK_FPS=25
 API_PORT=8000
+WAN_MODEL_DIR=/data/models/Wan2.1-T2V-1.3B
 ```
+
+La primera solicitud a `POST /promos` descarga los pesos de Wan2.1 a
+`WAN_MODEL_DIR`. Reserva al menos 12 GB libres adicionales en el almacenamiento
+del contenedor. Las solicitudes posteriores reutilizan esos pesos.
 
 ## API
 
@@ -52,6 +59,31 @@ Ejemplo JSON:
 
 La primera vez que se usa un `avatar_id`, se envía `avatar_url`. En solicitudes posteriores se puede omitir para reutilizar el avatar preparado.
 
+### Crear promoción desde cero
+
+`POST /promos`
+
+Ejemplo:
+
+```json
+{
+  "text": "Descarga AZTV y disfruta entretenimiento donde quieras.",
+  "person_prompt": "presentador joven latino, sonriente, ropa casual moderna",
+  "brand_text": "AZTV",
+  "cta_text": "Descárgala hoy",
+  "orientation": "vertical",
+  "steps": 28
+}
+```
+
+Flujo automático: Wan2.1 genera una persona en movimiento → Piper crea la voz →
+MuseTalk sincroniza los labios → FFmpeg agrega la marca y el CTA. Para usar un
+logo real, agrega `"logo_url": "https://.../logo.png"`.
+
+El progreso aparece en `stage`, por ejemplo
+`downloading_video_model`, `generating_person_video`, `syncing_lips` y
+`adding_brand`.
+
 ### Revisar trabajo
 
 `GET /jobs/{job_id}`
@@ -73,6 +105,8 @@ Authorization: Bearer TU_TOKEN
 - RAM: 24 GB
 - Réplicas: 1
 - Puerto del contenedor: 8000
+- Almacenamiento recomendado con Wan2.1: 40 GB o más
+- Wan2.1 1.3B se ejecuta de forma secuencial con MuseTalk para compartir una sola GPU
 
 ## Conexión con ChatGPT
 

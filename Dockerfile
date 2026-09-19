@@ -6,13 +6,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HUB_DISABLE_TELEMETRY=1 \
     MUSETALK_HOME=/opt/MuseTalk \
     DATA_DIR=/data \
-    API_PORT=8000
+    API_PORT=8000 \
+    WAN_HOME=/opt/Wan2.1 \
+    WAN_PYTHON=/opt/wan-venv/bin/python \
+    WAN_MODEL_DIR=/data/models/Wan2.1-T2V-1.3B
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-dev \
+    python3 python3-pip python3-dev python3-venv \
     git curl wget ca-certificates ffmpeg \
     build-essential ninja-build pkg-config \
-    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libsndfile1 espeak-ng \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libsndfile1 espeak-ng fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python && \
@@ -45,6 +48,23 @@ RUN grep -v -E '^(tensorflow|tensorboard|gradio)' requirements.txt > /tmp/museta
 COPY requirements-api.txt /tmp/requirements-api.txt
 RUN python -m pip install -r /tmp/requirements-api.txt
 
+# Wan2.1 text-to-video runs in a separate Python environment so MuseTalk can
+# keep its recommended PyTorch 2.0.1 stack unchanged.
+ARG WAN_COMMIT=9737cba9c1c3c4d04b33fcad41c111989865d315
+RUN git clone https://github.com/Wan-Video/Wan2.1.git /opt/Wan2.1 && \
+    cd /opt/Wan2.1 && \
+    git checkout "${WAN_COMMIT}"
+
+COPY requirements-wan.txt /tmp/requirements-wan.txt
+RUN python3 -m venv /opt/wan-venv && \
+    /opt/wan-venv/bin/pip install --upgrade pip setuptools wheel && \
+    /opt/wan-venv/bin/pip install \
+      torch==2.4.0 torchvision==0.19.0 \
+      --index-url https://download.pytorch.org/whl/cu118 && \
+    /opt/wan-venv/bin/pip install -r /tmp/requirements-wan.txt && \
+    cd /opt/Wan2.1 && \
+    /opt/wan-venv/bin/python -c "import torch, wan; print('Wan2.1 torch', torch.__version__)"
+
 # Download only the weights used by MuseTalk 1.5 inference.
 RUN mkdir -p models/musetalkV15 models/sd-vae models/whisper models/dwpose models/face-parse-bisent && \
     python -m pip install "huggingface_hub==0.30.2" && \
@@ -62,11 +82,12 @@ RUN mkdir -p /opt/voices && \
       https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/ald/medium/es_MX-ald-medium.onnx.json
 
 # Put generated/cached files outside the application tree.
-RUN mkdir -p /data/results /data/jobs /data/sources && \
+RUN mkdir -p /data/results /data/jobs /data/sources /data/models && \
     rm -rf /opt/MuseTalk/results && \
     ln -s /data/results /opt/MuseTalk/results
 
 COPY server /app
+RUN python -m py_compile /app/main.py
 ENV PYTHONPATH=/opt/MuseTalk
 
 EXPOSE 8000
