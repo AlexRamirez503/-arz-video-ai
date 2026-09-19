@@ -62,8 +62,7 @@ RUN python3 -m venv /opt/wan-venv && \
       torch==2.4.0 torchvision==0.19.0 \
       --index-url https://download.pytorch.org/whl/cu118 && \
     /opt/wan-venv/bin/pip install -r /tmp/requirements-wan.txt && \
-    cd /opt/Wan2.1 && \
-    /opt/wan-venv/bin/python -c "import torch, wan; print('Wan2.1 torch', torch.__version__)"
+    /opt/wan-venv/bin/python -c "import torch; print('Wan2.1 torch', torch.__version__)"
 
 # Download only the weights used by MuseTalk 1.5 inference.
 RUN mkdir -p models/musetalkV15 models/sd-vae models/whisper models/dwpose models/face-parse-bisent && \
