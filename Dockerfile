@@ -47,22 +47,12 @@ RUN python -m pip install -r /tmp/requirements-api.txt
 
 # Download only the weights used by MuseTalk 1.5 inference.
 RUN mkdir -p models/musetalkV15 models/sd-vae models/whisper models/dwpose models/face-parse-bisent && \
-    python -m pip install -U "huggingface_hub[hf_xet]" && \
-    huggingface-cli download TMElyralab/MuseTalk \
-      --local-dir models \
-      --include "musetalkV15/musetalk.json" "musetalkV15/unet.pth" && \
-    huggingface-cli download stabilityai/sd-vae-ft-mse \
-      --local-dir models/sd-vae \
-      --include "config.json" "diffusion_pytorch_model.bin" && \
-    huggingface-cli download openai/whisper-tiny \
-      --local-dir models/whisper \
-      --include "config.json" "pytorch_model.bin" "preprocessor_config.json" && \
-    huggingface-cli download yzd-v/DWPose \
-      --local-dir models/dwpose \
-      --include "dw-ll_ucoco_384.pth" && \
-    huggingface-cli download ManyOtherFunctions/face-parse-bisent \
-      --local-dir models/face-parse-bisent \
-      --include "79999_iter.pth" "resnet18-5c106cde.pth"
+    python -m pip install "huggingface_hub==0.30.2" && \
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('TMElyralab/MuseTalk', local_dir='models', allow_patterns=['musetalkV15/musetalk.json','musetalkV15/unet.pth'])" && \
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('stabilityai/sd-vae-ft-mse', local_dir='models/sd-vae', allow_patterns=['config.json','diffusion_pytorch_model.bin'])" && \
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('openai/whisper-tiny', local_dir='models/whisper', allow_patterns=['config.json','pytorch_model.bin','preprocessor_config.json'])" && \
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('yzd-v/DWPose', local_dir='models/dwpose', allow_patterns=['dw-ll_ucoco_384.pth'])" && \
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('ManyOtherFunctions/face-parse-bisent', local_dir='models/face-parse-bisent', allow_patterns=['79999_iter.pth','resnet18-5c106cde.pth'])"
 
 # Piper Mexican Spanish voice.
 RUN mkdir -p /opt/voices && \
