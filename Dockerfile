@@ -37,6 +37,8 @@ RUN grep -v -E '^(tensorflow|tensorboard|gradio)' requirements.txt > /tmp/museta
     mim install mmengine && \
     mim install "mmcv==2.0.1" && \
     mim install "mmdet==3.1.0" && \
+    python -m pip install "setuptools<82" wheel && \
+    python -m pip install --no-build-isolation "chumpy==0.70" && \
     mim install "mmpose==1.1.0"
 
 # API + local Spanish TTS.
