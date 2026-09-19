@@ -81,3 +81,4 @@ EXPOSE 8000
 WORKDIR /opt/MuseTalk
 
 CMD ["python", "/app/main.py"]
+# Build trigger
