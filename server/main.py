@@ -16,7 +16,7 @@ import cv2
 import requests
 import torch
 from fastapi import Depends, FastAPI, Header, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field, HttpUrl
 
 MUSETALK_HOME = Path(os.getenv("MUSETALK_HOME", "/opt/MuseTalk")).resolve()
@@ -80,6 +80,10 @@ class PromoRequest(BaseModel):
     orientation: Literal["vertical", "landscape"] = "vertical"
     steps: int = Field(default=28, ge=20, le=50)
     seed: int = Field(default=-1, ge=-1)
+
+
+class StudioRequest(BaseModel):
+    message: str = Field(min_length=3, max_length=1800)
 
 
 def require_auth(authorization: Optional[str] = Header(default=None)):
@@ -696,6 +700,214 @@ def create_job(request: GenerateRequest):
         status="queued",
         created_at=time.time(),
         avatar_id=avatar_id,
+    )
+    job_queue.put((job_id, payload))
+    return {
+        "id": job_id,
+        "status": "queued",
+        "status_endpoint": f"/jobs/{job_id}",
+        "video_endpoint": f"/jobs/{job_id}/video",
+    }
+
+
+def parse_studio_message(message: str):
+    raw = message.strip()
+    lower = raw.lower()
+
+    orientation = "vertical"
+    if any(word in lower for word in ("horizontal", "landscape", "youtube", "16:9")):
+        orientation = "landscape"
+
+    speech = None
+    quoted = re.findall(r'["“”](.+?)["“”]', raw)
+    if quoted:
+        speech = quoted[-1].strip()
+
+    if not speech:
+        patterns = [
+            r"(?:que diga|diciendo|y diga|debe decir)\s*[:：-]?\s*(.+)$",
+            r"(?:texto|mensaje)\s*[:：-]\s*(.+)$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, raw, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                speech = match.group(1).strip().strip('"“”')
+                break
+
+    if not speech:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Indica lo que debe decir la persona. Ejemplo: "
+                "Crea una mujer joven tipo influencer promocionando AZTV "
+                "que diga \"Descarga AZTV hoy\"."
+            ),
+        )
+
+    person_prompt = raw
+    for marker in (" que diga ", " diciendo ", " y diga ", " debe decir "):
+        idx = lower.find(marker)
+        if idx >= 0:
+            person_prompt = raw[:idx].strip(" ,.-")
+            break
+
+    if quoted:
+        person_prompt = person_prompt.replace(f'"{speech}"', "").strip(" ,.-")
+
+    brand = "AZTV"
+    brand_match = re.search(
+        r"(?:marca|brand)\s+([A-Za-z0-9_-]{2,30})",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if brand_match:
+        brand = brand_match.group(1)
+
+    cta = "Descárgala hoy"
+    if "sin texto" in lower or "sin letras" in lower:
+        cta = ""
+
+    return {
+        "text": speech,
+        "person_prompt": person_prompt,
+        "brand_text": brand,
+        "cta_text": cta,
+        "logo_url": None,
+        "orientation": orientation,
+        "steps": 28,
+        "seed": -1,
+    }
+
+
+@app.get("/studio", response_class=HTMLResponse)
+def studio():
+    return HTMLResponse(
+        """<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AZTV AI Studio</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#09090b;color:#fff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif}
+.wrap{max-width:760px;margin:auto;min-height:100vh;padding:24px 14px 120px}
+h1{font-size:30px;margin:8px 4px 4px}
+.sub{color:#9ca3af;margin:0 4px 24px;line-height:1.45}
+.card{background:#151519;border:1px solid #2b2b31;border-radius:20px;padding:16px;margin-bottom:14px}
+label{display:block;color:#b7bac2;font-size:13px;margin:0 0 8px}
+input,textarea{width:100%;border:1px solid #33343b;background:#0e0e11;color:white;border-radius:14px;padding:13px;font-size:16px}
+textarea{min-height:128px;resize:vertical;line-height:1.4}
+button{border:0;border-radius:14px;padding:14px 18px;font-size:16px;font-weight:800;background:white;color:#050505;width:100%}
+button:disabled{opacity:.45}
+.example{color:#9ca3af;font-size:13px;line-height:1.5;margin-top:10px}
+.msg{border-radius:18px;padding:14px;margin:12px 0;background:#17171c;border:1px solid #2b2b31}
+.mine{background:#202838}
+.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;margin-bottom:8px}
+.queued{background:#233452;color:#93c5fd}.running{background:#493b16;color:#fde68a}.done{background:#173d27;color:#86efac}.error{background:#4a1d24;color:#fda4af}
+video{width:100%;border-radius:14px;background:#000;margin-top:10px}
+a.download{display:block;background:#fff;color:#000;text-decoration:none;text-align:center;padding:12px;border-radius:12px;font-weight:800;margin-top:10px}
+.small{font-size:12px;color:#8a8d96;word-break:break-all}
+#notice{color:#fbbf24;font-size:13px;margin-top:10px;min-height:18px}
+</style>
+</head>
+<body><div class="wrap">
+<h1>AZTV AI Studio</h1>
+<p class="sub">Escribe lo que quieres como un mensaje. El sistema genera la persona, la voz, sincroniza labios y prepara el video.</p>
+
+<div class="card">
+<label>API Token</label>
+<input id="token" type="password" placeholder="Pega tu token una sola vez">
+<div class="example">Se guarda únicamente en este navegador.</div>
+</div>
+
+<div class="card">
+<label>¿Qué quieres crear?</label>
+<textarea id="message" placeholder='Ejemplo: Crea una mujer joven tipo influencer, sonriente y moviendo las manos, promocionando AZTV, que diga "Descarga AZTV y disfruta entretenimiento donde quieras."'></textarea>
+<div class="example">Para indicar la voz exacta usa “que diga ...” o pon el texto entre comillas.</div>
+<div id="notice"></div>
+<button id="send">Generar promoción</button>
+</div>
+
+<div id="chat"></div>
+</div>
+<script>
+const tokenEl=document.getElementById('token');
+const msgEl=document.getElementById('message');
+const sendEl=document.getElementById('send');
+const chat=document.getElementById('chat');
+const notice=document.getElementById('notice');
+tokenEl.value=localStorage.getItem('aztv_api_token')||'';
+tokenEl.addEventListener('change',()=>localStorage.setItem('aztv_api_token',tokenEl.value.trim()));
+let jobs=JSON.parse(localStorage.getItem('aztv_studio_jobs')||'[]');
+
+function headers(){return {'Authorization':'Bearer '+tokenEl.value.trim(),'Content-Type':'application/json'};}
+function save(){localStorage.setItem('aztv_studio_jobs',JSON.stringify(jobs.slice(0,30)));}
+
+function render(){
+  chat.innerHTML='';
+  jobs.forEach(j=>{
+    const el=document.createElement('div'); el.className='msg';
+    let cls=j.status==='done'?'done':j.status==='error'?'error':j.status==='running'?'running':'queued';
+    let media='';
+    if(j.status==='done') media='<video controls playsinline src="/jobs/'+j.id+'/video"></video><a class="download" href="/jobs/'+j.id+'/video" target="_blank">Abrir / descargar MP4</a>';
+    if(j.status==='error') media='<div style="color:#fca5a5;margin-top:8px">'+(j.error||'Error')+'</div>';
+    el.innerHTML='<span class="badge '+cls+'">'+(j.stage||j.status||'queued')+'</span><div>'+escapeHtml(j.message)+'</div>'+media+'<div class="small">'+j.id+'</div>';
+    chat.appendChild(el);
+  });
+}
+function escapeHtml(s){return (s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+
+async function poll(){
+  for(const j of jobs){
+    if(!j.id || j.status==='done' || j.status==='error') continue;
+    try{
+      const r=await fetch('/jobs/'+j.id,{headers:{'Authorization':'Bearer '+tokenEl.value.trim()}});
+      if(!r.ok) continue;
+      const d=await r.json();
+      j.status=d.status||j.status; j.stage=d.stage||d.status||j.stage; j.error=d.error||'';
+    }catch(e){}
+  }
+  save(); render();
+}
+setInterval(poll,6000);
+
+sendEl.onclick=async()=>{
+  const token=tokenEl.value.trim(), message=msgEl.value.trim();
+  if(!token){notice.textContent='Primero pega tu API Token.';return;}
+  if(!message){notice.textContent='Escribe lo que quieres crear.';return;}
+  localStorage.setItem('aztv_api_token',token);
+  sendEl.disabled=true; notice.textContent='Enviando...';
+  try{
+    const r=await fetch('/studio/request',{method:'POST',headers:headers(),body:JSON.stringify({message})});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail||'No se pudo crear');
+    jobs.unshift({id:d.id,message,status:d.status||'queued',stage:'queued'});
+    save(); render(); msgEl.value=''; notice.textContent='Trabajo enviado. Puedes dejar esta página abierta.';
+  }catch(e){notice.textContent=e.message;}
+  finally{sendEl.disabled=false;}
+};
+render(); poll();
+</script>
+</body></html>"""
+    )
+
+
+@app.post("/studio/request", status_code=202, dependencies=[Depends(require_auth)])
+def studio_request(request: StudioRequest):
+    parsed = parse_studio_message(request.message)
+    job_id = uuid.uuid4().hex
+    payload = {"kind": "promo", **parsed}
+    set_job(
+        job_id,
+        id=job_id,
+        kind="promo",
+        status="queued",
+        stage="queued",
+        created_at=time.time(),
+        brand_text=parsed["brand_text"],
+        studio_message=request.message.strip(),
     )
     job_queue.put((job_id, payload))
     return {
