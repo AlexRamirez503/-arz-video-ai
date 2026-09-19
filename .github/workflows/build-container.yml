@@ -1,4 +1,5 @@
 name: Build ARZ Video AI container
+# Wan2.1 build trigger
 
 on:
   push:
