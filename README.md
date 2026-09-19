@@ -59,6 +59,18 @@ Ejemplo JSON:
 
 La primera vez que se usa un `avatar_id`, se envía `avatar_url`. En solicitudes posteriores se puede omitir para reutilizar el avatar preparado.
 
+### Panel tipo chat
+
+Abre `GET /studio` en el navegador. Pega tu `API_TOKEN` una sola vez y después
+puedes escribir órdenes normales como:
+
+> Crea una mujer joven tipo influencer, sonriente y moviendo las manos,
+> promocionando AZTV, que diga "Descarga AZTV y disfruta entretenimiento donde quieras."
+
+El panel crea el trabajo, muestra el progreso y presenta el MP4 cuando termina.
+También existe `POST /studio/request` para enviar una sola instrucción en lenguaje
+natural.
+
 ### Crear promoción desde cero
 
 `POST /promos`
