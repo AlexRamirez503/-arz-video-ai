@@ -407,7 +407,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         app_dir="/app",
-        host="0.0.0.0",
+        host="::",
         port=PORT,
         workers=1,
         log_level=os.getenv("LOG_LEVEL", "info"),
