@@ -1,0 +1,27 @@
+name: Verify public GHCR image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verify-ghcr-public.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-anonymous-pull:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure no GHCR credentials
+        shell: bash
+        run: docker logout ghcr.io || true
+
+      - name: Pull image anonymously
+        shell: bash
+        run: docker pull ghcr.io/alexramirez503/arz-video-ai:latest
+
+      - name: Show pulled image
+        shell: bash
+        run: docker image inspect ghcr.io/alexramirez503/arz-video-ai:latest --format 'Image={{index .RepoDigests 0}}'
