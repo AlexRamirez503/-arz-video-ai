@@ -46,6 +46,11 @@ FAST_PROMO_AVATAR_PATH = Path(
 ).resolve()
 FAST_VOICE_LENGTH_SCALE = float(os.getenv("FAST_VOICE_LENGTH_SCALE", "0.84"))
 NORMAL_VOICE_LENGTH_SCALE = float(os.getenv("NORMAL_VOICE_LENGTH_SCALE", "1.0"))
+CINEMATIC_SCENE_PATHS = (
+    Path(__file__).with_name("assets") / "cinematic-neon-corridor.jpg",
+    Path(__file__).with_name("assets") / "cinematic-content-panels.jpg",
+    Path(__file__).with_name("assets") / "cinematic-devices.jpg",
+)
 
 JOBS_DIR = DATA_DIR / "jobs"
 SOURCES_DIR = DATA_DIR / "sources"
@@ -100,6 +105,7 @@ class StudioRequest(BaseModel):
     brand_text: str = Field(default="AZTV", min_length=1, max_length=80)
     cta_text: str = Field(default="Descárgala hoy", max_length=120)
     voice_speed: Literal["fast", "normal"] = "fast"
+    visual_mode: Literal["cinematic", "avatar"] = "cinematic"
 
 
 def has_studio_session(studio_session: Optional[str]) -> bool:
@@ -535,6 +541,69 @@ def apply_branding(
         logo_path.unlink(missing_ok=True)
 
 
+def _video_duration(path: Path) -> float:
+    result = subprocess.check_output(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        ],
+        text=True,
+    ).strip()
+    return float(result)
+
+
+def build_cinematic_mix(source: Path, output: Path):
+    """Intercut the talking avatar with full-screen visual product scenes."""
+    missing = [str(path) for path in CINEMATIC_SCENE_PATHS if not path.is_file()]
+    if missing:
+        raise RuntimeError("Faltan las escenas visuales de la promoción")
+
+    duration = _video_duration(source)
+    avatar_duration = min(1.25, max(0.65, duration * 0.15))
+    scene_duration = (duration - (avatar_duration * 3)) / 3
+    if scene_duration < 0.45:
+        shutil.copy2(source, output)
+        return
+
+    def avatar_clip(start: float, label: str) -> str:
+        return (
+            f"[0:v]trim=start={start:.3f}:duration={avatar_duration:.3f},"
+            "setpts=PTS-STARTPTS,"
+            "scale=720:1280:force_original_aspect_ratio=decrease,"
+            "pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1"
+            f"[{label}]"
+        )
+
+    filters = [
+        avatar_clip(0, "avatar0"),
+        avatar_clip(avatar_duration + scene_duration, "avatar1"),
+        avatar_clip((avatar_duration + scene_duration) * 2, "avatar2"),
+    ]
+    for index in range(3):
+        filters.append(
+            f"[{index + 1}:v]scale=720:1280:force_original_aspect_ratio=increase,"
+            "crop=720:1280,setsar=1,"
+            f"trim=duration={scene_duration:.3f},setpts=PTS-STARTPTS[scene{index}]"
+        )
+    filters.append(
+        "[avatar0][scene0][avatar1][scene1][avatar2][scene2]"
+        "concat=n=6:v=1:a=0[video]"
+    )
+
+    command = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source)]
+    for scene in CINEMATIC_SCENE_PATHS:
+        command.extend(["-loop", "1", "-t", f"{scene_duration + 0.2:.3f}", "-i", str(scene)])
+    command.extend(
+        [
+            "-filter_complex", ";".join(filters),
+            "-map", "[video]", "-map", "0:a?", "-t", f"{duration:.3f}",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(output),
+        ]
+    )
+    subprocess.run(command, check=True)
+
+
 def ensure_promo_avatar(payload: dict):
     """Resolve either the bundled animated 3D presenter or a user-supplied MP4."""
     avatar_id = clean_avatar_id(payload["avatar_id"])
@@ -561,6 +630,7 @@ def run_promo_job(job_id: str, payload: dict):
     set_job(job_id, status="running", stage="preparing_avatar")
     wav_path = JOBS_DIR / f"{job_id}.wav"
     lip_path = JOBS_DIR / f"{job_id}-lipsync.mp4"
+    cinematic_path = JOBS_DIR / f"{job_id}-cinematic.mp4"
     final_path = JOBS_DIR / f"{job_id}.mp4"
 
     try:
@@ -587,9 +657,15 @@ def run_promo_job(job_id: str, payload: dict):
             raise RuntimeError("MuseTalk no generó el MP4 promocional esperado")
         shutil.copy2(produced, lip_path)
 
+        source_for_branding = lip_path
+        if payload.get("visual_mode") == "cinematic":
+            set_job(job_id, stage="building_visual_story")
+            build_cinematic_mix(lip_path, cinematic_path)
+            source_for_branding = cinematic_path
+
         set_job(job_id, stage="adding_brand")
         apply_branding(
-            source=lip_path,
+            source=source_for_branding,
             output=final_path,
             brand_text=payload["brand_text"],
             cta_text=payload["cta_text"],
@@ -616,6 +692,7 @@ def run_promo_job(job_id: str, payload: dict):
     finally:
         wav_path.unlink(missing_ok=True)
         lip_path.unlink(missing_ok=True)
+        cinematic_path.unlink(missing_ok=True)
 
 
 def cleanup_outputs(keep: int = 30):
@@ -936,6 +1013,7 @@ def studio_request(request: StudioRequest):
         "brand_text": request.brand_text.strip(),
         "cta_text": request.cta_text.strip(),
         "voice_speed": request.voice_speed,
+        "visual_mode": request.visual_mode,
     }
     set_job(
         job_id,

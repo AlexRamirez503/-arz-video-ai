@@ -23,6 +23,7 @@
 <div class="field"><label for="brand">Marca</label><input id="brand" value="AZTV" maxlength="80"></div>
 <div class="field"><label for="cta">Llamado a la acción</label><input id="cta" value="Descárgala hoy" maxlength="120"></div>
 <div class="field"><label for="voiceSpeed">Ritmo de voz</label><select id="voiceSpeed"><option value="fast">Rápido</option><option value="normal">Normal</option></select></div>
+<div class="field"><label for="visualMode">Estilo del video</label><select id="visualMode"><option value="cinematic">Cinemático: avatar + escenas visuales</option><option value="avatar">Solo avatar hablando</option></select><div class="example">El modo cinematográfico intercala pasillo neón, pantallas de contenido y dispositivos, manteniendo la voz de la presentadora.</div></div>
 <div id="notice"></div>
 <button id="send">Generar promoción rápida</button>
 </div>
@@ -34,6 +35,7 @@ const avatarUrlEl=document.getElementById('avatarUrl');
 const brandEl=document.getElementById('brand');
 const ctaEl=document.getElementById('cta');
 const voiceSpeedEl=document.getElementById('voiceSpeed');
+const visualModeEl=document.getElementById('visualMode');
 const sendEl=document.getElementById('send');
 const chat=document.getElementById('chat');
 const notice=document.getElementById('notice');
@@ -47,7 +49,7 @@ async function loadVideo(j){if(videoUrls.has(j.id)||loadingVideos.has(j.id))retu
 function render(){chat.innerHTML='';jobs.forEach(j=>{const e=document.createElement('div');e.className='msg';const cls=j.status==='done'?'done':j.status==='error'?'error':j.status==='running'?'running':'queued';let media='';if(j.status==='done'){const url=videoUrls.get(j.id);if(url)media='<video controls playsinline src="'+url+'"></video><a class="download" href="'+url+'" download="promocion.mp4">Descargar MP4</a>';else{media='<div>Preparando video...</div>';loadVideo(j);}}if(j.status==='error')media='<div style="color:#fca5a5;margin-top:8px">'+esc(j.error||'Error')+'</div>';e.innerHTML='<span class="badge '+cls+'">'+esc(j.stage||j.status||'queued')+'</span><div>'+esc(j.message)+'</div>'+media+'<div class="small">'+esc(j.id)+'</div>';chat.appendChild(e);});}
 async function poll(){let changed=false;for(const j of jobs){if(!j.id||j.status==='done'||j.status==='error')continue;try{const r=await fetch('/jobs/'+j.id,{headers:headers(false),credentials:'same-origin'});if(!r.ok)continue;const d=await r.json();if(j.status!==d.status||j.stage!==(d.stage||d.status)||j.error!==(d.error||''))changed=true;j.status=d.status||j.status;j.stage=d.stage||d.status||j.stage;j.error=d.error||'';}catch(e){}}if(changed){save();render();}}
 setInterval(poll,6000);
-sendEl.onclick=async()=>{const message=msgEl.value.trim();if(!message){notice.textContent='Escribe lo que debe decir la presentadora.';return;}sendEl.disabled=true;notice.textContent='Enviando...';try{const body={message,avatar_url:avatarUrlEl.value.trim()||null,brand_text:brandEl.value.trim()||'AZTV',cta_text:ctaEl.value.trim(),voice_speed:voiceSpeedEl.value};const r=await fetch('/studio/request',{method:'POST',headers:headers(),body:JSON.stringify(body),credentials:'same-origin'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo iniciar la promoción');jobs.unshift({id:d.id,message,status:d.status||'queued',stage:'queued'});save();render();msgEl.value='';notice.textContent='Promoción en cola. Puedes dejar esta página abierta.';}catch(e){notice.textContent=e.message;}finally{sendEl.disabled=false;}};
+sendEl.onclick=async()=>{const message=msgEl.value.trim();if(!message){notice.textContent='Escribe lo que debe decir la presentadora.';return;}sendEl.disabled=true;notice.textContent='Enviando...';try{const body={message,avatar_url:avatarUrlEl.value.trim()||null,brand_text:brandEl.value.trim()||'AZTV',cta_text:ctaEl.value.trim(),voice_speed:voiceSpeedEl.value,visual_mode:visualModeEl.value};const r=await fetch('/studio/request',{method:'POST',headers:headers(),body:JSON.stringify(body),credentials:'same-origin'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo iniciar la promoción');jobs.unshift({id:d.id,message,status:d.status||'queued',stage:'queued'});save();render();msgEl.value='';notice.textContent='Promoción en cola. Puedes dejar esta página abierta.';}catch(e){notice.textContent=e.message;}finally{sendEl.disabled=false;}};
 window.addEventListener('beforeunload',()=>videoUrls.forEach(url=>URL.revokeObjectURL(url)));
 render();poll();
 </script>
