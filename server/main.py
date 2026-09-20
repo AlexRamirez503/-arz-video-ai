@@ -36,6 +36,12 @@ WAN_MODEL_DIR = Path(
 WAN_MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B")
 WAN_MODEL_MARKER = WAN_MODEL_DIR / ".download-complete"
 WAN_MODEL_MIN_FREE_GB = int(os.getenv("WAN_MODEL_MIN_FREE_GB", "12"))
+FAST_PROMO_AVATAR_ID = os.getenv("FAST_PROMO_AVATAR_ID", "promo3d")
+FAST_PROMO_AVATAR_PATH = Path(
+    os.getenv("FAST_PROMO_AVATAR_PATH", "/app/assets/default_3d_presenter.mp4")
+).resolve()
+FAST_VOICE_LENGTH_SCALE = float(os.getenv("FAST_VOICE_LENGTH_SCALE", "0.84"))
+NORMAL_VOICE_LENGTH_SCALE = float(os.getenv("NORMAL_VOICE_LENGTH_SCALE", "1.0"))
 
 JOBS_DIR = DATA_DIR / "jobs"
 SOURCES_DIR = DATA_DIR / "sources"
@@ -48,7 +54,7 @@ sys.path.insert(0, str(MUSETALK_HOME))
 app = FastAPI(
     title="ARZ Video AI",
     version="0.1.0",
-    description="Text-to-speech + MuseTalk 1.5 talking-avatar API.",
+    description="Fast animated-avatar + local Spanish voice API.",
 )
 
 jobs = {}
@@ -86,6 +92,10 @@ class PromoRequest(BaseModel):
 
 class StudioRequest(BaseModel):
     message: str = Field(min_length=3, max_length=1800)
+    avatar_url: Optional[HttpUrl] = None
+    brand_text: str = Field(default="AZTV", min_length=1, max_length=80)
+    cta_text: str = Field(default="Descárgala hoy", max_length=120)
+    voice_speed: Literal["fast", "normal"] = "fast"
 
 
 def require_auth(authorization: Optional[str] = Header(default=None)):
@@ -294,11 +304,17 @@ def ensure_avatar(avatar_id: str, avatar_url: Optional[str]):
     return avatar
 
 
-def synthesize_speech(text: str, output_wav: Path):
+def synthesize_speech(
+    text: str,
+    output_wav: Path,
+    length_scale: float = NORMAL_VOICE_LENGTH_SCALE,
+):
     cmd = [
         "piper",
         "--model", str(VOICE_MODEL),
         "--output_file", str(output_wav),
+        "--length-scale", str(length_scale),
+        "--sentence-silence", "0.08",
     ]
     subprocess.run(cmd, input=text, text=True, check=True)
 
@@ -502,39 +518,56 @@ def apply_branding(
         logo_path.unlink(missing_ok=True)
 
 
+def ensure_promo_avatar(payload: dict):
+    """Resolve either the bundled animated 3D presenter or a user-supplied MP4."""
+    avatar_id = clean_avatar_id(payload["avatar_id"])
+    avatar_url = payload.get("avatar_url")
+
+    if avatar_id in avatar_cache or avatar_prepared(avatar_id) or avatar_url:
+        return ensure_avatar(avatar_id, avatar_url)
+
+    if avatar_id == FAST_PROMO_AVATAR_ID and FAST_PROMO_AVATAR_PATH.is_file():
+        return prepare_avatar_from_local(avatar_id, FAST_PROMO_AVATAR_PATH)
+
+    raise RuntimeError(
+        "No hay avatar rápido disponible. Agrega el video 3D incluido o proporciona una URL MP4 directa."
+    )
+
+
 def run_promo_job(job_id: str, payload: dict):
-    set_job(job_id, status="running", stage="preparing")
+    """Fast promo path for RTX 3060: animated MP4 + local voice + MuseTalk.
+
+    Wan2.1 is intentionally excluded from this interactive route. The fixed,
+    animated 3D source (or an uploaded MP4 URL) keeps jobs practical on 12 GB
+    VRAM while MuseTalk provides the lip synchronization.
+    """
+    set_job(job_id, status="running", stage="preparing_avatar")
     wav_path = JOBS_DIR / f"{job_id}.wav"
     lip_path = JOBS_DIR / f"{job_id}-lipsync.mp4"
     final_path = JOBS_DIR / f"{job_id}.mp4"
-    wan_video = None
 
     try:
-        wan_video = run_wan_video(
-            job_id=job_id,
-            person_prompt=payload["person_prompt"],
-            orientation=payload["orientation"],
-            steps=payload["steps"],
-            seed=payload["seed"],
+        init_engine()
+        avatar = ensure_promo_avatar(payload)
+
+        set_job(job_id, stage="synthesizing_voice")
+        length_scale = (
+            FAST_VOICE_LENGTH_SCALE
+            if payload.get("voice_speed", "fast") == "fast"
+            else NORMAL_VOICE_LENGTH_SCALE
         )
+        synthesize_speech(payload["text"], wav_path, length_scale=length_scale)
 
-        set_job(job_id, stage="loading_lipsync")
-        avatar_id = f"promo-{job_id[:16]}"
-        avatar = prepare_avatar_from_local(avatar_id, wan_video)
-
-        set_job(job_id, stage="synthesizing_speech")
-        synthesize_speech(payload["text"], wav_path)
-
-        set_job(job_id, stage="syncing_lips")
+        set_job(job_id, stage="syncing_avatar")
         avatar.inference(
             audio_path=str(wav_path),
             out_vid_name=job_id,
             fps=FPS,
             skip_save_images=False,
         )
-        produced = avatar_base(avatar_id) / "vid_output" / f"{job_id}.mp4"
-        if not produced.exists():
-            raise RuntimeError("MuseTalk did not create the expected promo MP4")
+        produced = avatar_base(payload["avatar_id"]) / "vid_output" / f"{job_id}.mp4"
+        if not produced.is_file() or not produced.stat().st_size:
+            raise RuntimeError("MuseTalk no generó el MP4 promocional esperado")
         shutil.copy2(produced, lip_path)
 
         set_job(job_id, stage="adding_brand")
@@ -546,7 +579,6 @@ def run_promo_job(job_id: str, payload: dict):
             logo_url=payload.get("logo_url"),
             job_id=job_id,
         )
-
         set_job(
             job_id,
             status="done",
@@ -567,8 +599,6 @@ def run_promo_job(job_id: str, payload: dict):
     finally:
         wav_path.unlink(missing_ok=True)
         lip_path.unlink(missing_ok=True)
-        if wan_video is not None:
-            wan_video.unlink(missing_ok=True)
 
 
 def cleanup_outputs(keep: int = 30):
@@ -698,6 +728,8 @@ def health():
         "musetalk_loaded": engine_ready,
         "wan_model_ready": wan_model_ready(),
         "motion_installed": motion_available(),
+        "fast_promo_avatar_source": FAST_PROMO_AVATAR_PATH.is_file(),
+        "fast_promo_avatar_prepared": avatar_prepared(FAST_PROMO_AVATAR_ID),
     }
 
 
@@ -852,174 +884,23 @@ def parse_studio_message(message: str):
 
 @app.get("/studio", response_class=HTMLResponse)
 def studio():
-    return HTMLResponse(
-        """<!doctype html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>AZTV AI Studio</title>
-<style>
-:root{color-scheme:dark}
-*{box-sizing:border-box}
-body{margin:0;background:#09090b;color:#fff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif}
-.wrap{max-width:760px;margin:auto;min-height:100vh;padding:24px 14px 120px}
-h1{font-size:30px;margin:8px 4px 4px}
-.sub{color:#9ca3af;margin:0 4px 24px;line-height:1.45}
-.card{background:#151519;border:1px solid #2b2b31;border-radius:20px;padding:16px;margin-bottom:14px}
-label{display:block;color:#b7bac2;font-size:13px;margin:0 0 8px}
-input,textarea{width:100%;border:1px solid #33343b;background:#0e0e11;color:white;border-radius:14px;padding:13px;font-size:16px}
-textarea{min-height:128px;resize:vertical;line-height:1.4}
-button{border:0;border-radius:14px;padding:14px 18px;font-size:16px;font-weight:800;background:white;color:#050505;width:100%}
-button:disabled{opacity:.45}
-.example{color:#9ca3af;font-size:13px;line-height:1.5;margin-top:10px}
-.msg{border-radius:18px;padding:14px;margin:12px 0;background:#17171c;border:1px solid #2b2b31}
-.mine{background:#202838}
-.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;margin-bottom:8px}
-.queued{background:#233452;color:#93c5fd}.running{background:#493b16;color:#fde68a}.done{background:#173d27;color:#86efac}.error{background:#4a1d24;color:#fda4af}
-video{width:100%;border-radius:14px;background:#000;margin-top:10px}
-a.download{display:block;background:#fff;color:#000;text-decoration:none;text-align:center;padding:12px;border-radius:12px;font-weight:800;margin-top:10px}
-.small{font-size:12px;color:#8a8d96;word-break:break-all}
-#notice{color:#fbbf24;font-size:13px;margin-top:10px;min-height:18px}
-</style>
-</head>
-<body><div class="wrap">
-<h1>AZTV AI Studio</h1>
-<p class="sub">Escribe lo que quieres como un mensaje. El sistema genera la persona, la voz, sincroniza labios y prepara el video.</p>
-
-<div class="card">
-<label>API Token</label>
-<input id="token" type="password" placeholder="Pega tu token una sola vez">
-<div class="example">Solo es necesario si el servidor tiene un token configurado. Se guarda en este navegador.</div>
-</div>
-
-<div class="card">
-<label for="avatarImage">Foto de tu avatar</label>
-<input id="avatarImage" type="file" accept="image/png,image/jpeg">
-<label for="motionReference">Video con los movimientos</label>
-<input id="motionReference" type="file" accept="video/*">
-<div class="example">Se usan los primeros 8 segundos (mínimo 2). El cuerpo y las manos deben verse bien en ambos archivos. Si la voz dura más, el movimiento se repite.</div>
-<label for="motionSpeech">¿Qué debe decir tu avatar?</label>
-<textarea id="motionSpeech" maxlength="800" placeholder="Escribe aquí el texto que dirá tu avatar"></textarea>
-<button id="sendMotion">Animar mi avatar con estos movimientos</button>
-</div>
-
-<div class="card">
-<label>¿Qué quieres crear?</label>
-<textarea id="message" placeholder='Ejemplo: Crea una mujer joven tipo influencer, sonriente y moviendo las manos, promocionando AZTV, que diga "Descarga AZTV y disfruta entretenimiento donde quieras."'></textarea>
-<div class="example">Para indicar la voz exacta usa “que diga ...” o pon el texto entre comillas.</div>
-<div id="notice"></div>
-<button id="send">Generar promoción</button>
-</div>
-
-<div id="chat"></div>
-</div>
-<script>
-const tokenEl=document.getElementById('token');
-const msgEl=document.getElementById('message');
-const sendEl=document.getElementById('send');
-const chat=document.getElementById('chat');
-const notice=document.getElementById('notice');
-tokenEl.value=localStorage.getItem('aztv_api_token')||'';
-tokenEl.addEventListener('change',()=>localStorage.setItem('aztv_api_token',tokenEl.value.trim()));
-let jobs=JSON.parse(localStorage.getItem('aztv_studio_jobs')||'[]');
-const videoUrls=new Map();
-const loadingVideos=new Set();
-
-async function loadVideo(j){
-  if(videoUrls.has(j.id)||loadingVideos.has(j.id)) return;
-  loadingVideos.add(j.id);
-  try{
-    const r=await fetch('/jobs/'+j.id+'/video',{headers:{'Authorization':'Bearer '+tokenEl.value.trim()}});
-    if(!r.ok) throw new Error('No se pudo abrir el video ('+r.status+'). Revisa el token.');
-    videoUrls.set(j.id,URL.createObjectURL(await r.blob()));
-    render();
-  }catch(e){notice.textContent=e.message;}
-  finally{loadingVideos.delete(j.id);}
-}
-window.addEventListener('beforeunload',()=>videoUrls.forEach(url=>URL.revokeObjectURL(url)));
-
-function headers(){return {'Authorization':'Bearer '+tokenEl.value.trim(),'Content-Type':'application/json'};}
-function save(){localStorage.setItem('aztv_studio_jobs',JSON.stringify(jobs.slice(0,30)));}
-
-function render(){
-  chat.innerHTML='';
-  jobs.forEach(j=>{
-    const el=document.createElement('div'); el.className='msg';
-    let cls=j.status==='done'?'done':j.status==='error'?'error':j.status==='running'?'running':'queued';
-    let media='';
-    if(j.status==='done'){
-      const url=videoUrls.get(j.id);
-      if(url) media='<video controls playsinline src="'+url+'"></video><a class="download" href="'+url+'" download="avatar.mp4">Descargar MP4</a>';
-      else {media='<div>Preparando video...</div>';loadVideo(j);}
-    }
-    if(j.status==='error') media='<div style="color:#fca5a5;margin-top:8px">'+escapeHtml(j.error||'Error')+'</div>';
-    el.innerHTML='<span class="badge '+cls+'">'+(j.stage||j.status||'queued')+'</span><div>'+escapeHtml(j.message)+'</div>'+media+'<div class="small">'+j.id+'</div>';
-    chat.appendChild(el);
-  });
-}
-function escapeHtml(s){return (s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
-
-async function poll(){
-  let changed=false;
-  for(const j of jobs){
-    if(!j.id || j.status==='done' || j.status==='error') continue;
-    try{
-      const r=await fetch('/jobs/'+j.id,{headers:{'Authorization':'Bearer '+tokenEl.value.trim()}});
-      if(!r.ok) continue;
-      const d=await r.json();
-      if(j.status!==d.status||j.stage!==(d.stage||d.status)||j.error!==(d.error||'')) changed=true;
-      j.status=d.status||j.status; j.stage=d.stage||d.status||j.stage; j.error=d.error||'';
-    }catch(e){}
-  }
-  if(changed){save(); render();}
-}
-setInterval(poll,6000);
-
-document.getElementById('sendMotion').onclick=async()=>{
-  const button=document.getElementById('sendMotion');
-  const avatar=document.getElementById('avatarImage').files[0];
-  const reference=document.getElementById('motionReference').files[0];
-  const text=document.getElementById('motionSpeech').value.trim();
-  if(!avatar||!reference||!text){notice.textContent='Selecciona la foto, el video de movimientos y escribe la voz.';return;}
-  if(avatar.size>20*1024*1024||reference.size>100*1024*1024){notice.textContent='Máximo: foto 20 MB y video 100 MB.';return;}
-  const form=new FormData();form.append('avatar',avatar);form.append('reference',reference);form.append('text',text);
-  button.disabled=true;notice.textContent='Subiendo tu avatar y los movimientos...';
-  try{
-    const r=await fetch('/motion-jobs',{method:'POST',headers:{'Authorization':'Bearer '+tokenEl.value.trim()},body:form});
-    const d=await r.json();
-    if(!r.ok) throw new Error(typeof d.detail==='string'?d.detail:'No se pudo iniciar la animación');
-    jobs.unshift({id:d.id,message:'Mi avatar con movimientos: '+text,status:'queued',stage:'queued'});
-    save();render();notice.textContent='Animación en cola. La primera ejecución descarga los modelos y puede tardar.';
-  }catch(e){notice.textContent=e.message;}
-  finally{button.disabled=false;}
-};
-
-sendEl.onclick=async()=>{
-  const token=tokenEl.value.trim(), message=msgEl.value.trim();
-  if(!message){notice.textContent='Escribe lo que quieres crear.';return;}
-  localStorage.setItem('aztv_api_token',token);
-  sendEl.disabled=true; notice.textContent='Enviando...';
-  try{
-    const r=await fetch('/studio/request',{method:'POST',headers:headers(),body:JSON.stringify({message})});
-    const d=await r.json();
-    if(!r.ok) throw new Error(d.detail||'No se pudo crear');
-    jobs.unshift({id:d.id,message,status:d.status||'queued',stage:'queued'});
-    save(); render(); msgEl.value=''; notice.textContent='Trabajo enviado. Puedes dejar esta página abierta.';
-  }catch(e){notice.textContent=e.message;}
-  finally{sendEl.disabled=false;}
-};
-render(); poll();
-</script>
-</body></html>"""
-    )
+    return HTMLResponse(Path(__file__).with_name("studio.html").read_text(encoding="utf-8"))
 
 
 @app.post("/studio/request", status_code=202, dependencies=[Depends(require_auth)])
 def studio_request(request: StudioRequest):
     parsed = parse_studio_message(request.message)
     job_id = uuid.uuid4().hex
-    payload = {"kind": "promo", **parsed}
+    avatar_url = str(request.avatar_url) if request.avatar_url else None
+    payload = {
+        "kind": "promo",
+        **parsed,
+        "avatar_id": FAST_PROMO_AVATAR_ID if not avatar_url else f"custom-{job_id[:16]}",
+        "avatar_url": avatar_url,
+        "brand_text": request.brand_text.strip(),
+        "cta_text": request.cta_text.strip(),
+        "voice_speed": request.voice_speed,
+    }
     set_job(
         job_id,
         id=job_id,
@@ -1027,7 +908,7 @@ def studio_request(request: StudioRequest):
         status="queued",
         stage="queued",
         created_at=time.time(),
-        brand_text=parsed["brand_text"],
+        brand_text=payload["brand_text"],
         studio_message=request.message.strip(),
     )
     job_queue.put((job_id, payload))
@@ -1046,10 +927,13 @@ def create_promo(request: PromoRequest):
         "kind": "promo",
         "text": request.text.strip(),
         "person_prompt": request.person_prompt.strip(),
+        "avatar_id": FAST_PROMO_AVATAR_ID,
+        "avatar_url": None,
         "brand_text": request.brand_text.strip(),
         "cta_text": request.cta_text.strip(),
         "logo_url": str(request.logo_url) if request.logo_url else None,
         "orientation": request.orientation,
+        "voice_speed": "fast",
         "steps": request.steps,
         "seed": request.seed,
     }

@@ -1,5 +1,5 @@
 name: Build ARZ Video AI container
-# Wan2.1 build trigger
+# Fast animated-avatar build trigger
 
 on:
   push:
@@ -59,4 +59,4 @@ jobs:
             ${{ env.IMAGE }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=ARZ Video AI - MuseTalk 1.5 + Piper + FastAPI
+            org.opencontainers.image.description=ARZ Video AI - fast animated avatar, MuseTalk 1.5, Piper, and FastAPI

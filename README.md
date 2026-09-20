@@ -1,158 +1,86 @@
 # ARZ Video AI
 
-Generador propio de videos de personas hablando, preparado para desplegarse con GPU NVIDIA en SaladCloud.
+**ARZ Video AI** is a fast Spanish-language promotional-video generator designed for a single NVIDIA RTX 3060 on SaladCloud. The default experience is a chat-style studio at `/studio`: write the message, choose the brand and CTA, and the service produces an MP4 with an animated 3D presenter, local Spanish voice, lip synchronization, and branded overlays.
 
-## Qué incluye
+## Fast mode
 
-- Wan2.1 T2V-1.3B para generar desde cero un presentador en movimiento.
-- MuseTalk 1.5 para sincronización de labios.
-- Piper TTS con voz `es_MX-ald-medium` para español.
-- Branding final con FFmpeg (texto AZTV, CTA y logo opcional).
-- FastAPI para controlar el generador por API.
-- Cola de trabajos de una sola GPU para evitar saturar la RTX 3060.
-- Caché de avatares: la primera preparación tarda más; los siguientes videos reutilizan el avatar.
-- Imagen Docker publicada automáticamente en GitHub Container Registry.
+The interactive chat deliberately **does not run Wan2.1 text-to-video**. Generating a new video character with Wan2.1 is too slow and memory-intensive for a responsive RTX 3060 workflow. Instead, the image includes an eight-second animated 3D presenter source clip. MuseTalk synchronizes the presenter to the requested narration, and Piper creates the voice locally.
 
-## Imagen para SaladCloud
+A user can also provide a direct URL to a custom animated MP4 in the studio. The first use prepares that avatar; subsequent requests reuse the prepared cache. Jobs are serialized so the single GPU is not overloaded.
 
-Cuando GitHub Actions termine correctamente, usa:
+| Capability | Fast chat mode |
+|---|---|
+| Natural-language request | Yes |
+| Default animated 3D presenter | Yes |
+| Spanish local voice | Yes, fast or normal pacing |
+| Lip synchronization | Yes, via MuseTalk 1.5 |
+| Brand and CTA overlay | Yes |
+| Custom animated avatar | Yes, with a direct MP4 URL |
+| Wan2.1 generation on chat requests | No |
 
+## Public studio URL
+
+Configure HTTP networking on port `8000` in SaladCloud. The Container Gateway creates a domain for the container group. Open:
+
+```text
+https://YOUR-SALAD-GATEWAY-DOMAIN/studio
 ```
+
+If `API_TOKEN` is set in SaladCloud, paste it once in the Studio. The token remains only in the browser's local storage.
+
+## Image for SaladCloud
+
+GitHub Actions publishes the image after every push to `main`:
+
+```text
 ghcr.io/alexramirez503/arz-video-ai:latest
 ```
 
-La imagen se publica con el nombre limpio `arz-video-ai` aunque este repositorio haya sido creado con un guion inicial.
+In SaladCloud, deploy that image with a single replica and HTTP networking configured for container port `8000`. Recreate the instance after GitHub Actions completes so Salad pulls the new image.
 
-## Variables recomendadas en SaladCloud
+## Environment variables
 
-```
-API_TOKEN=<un-token-secreto-largo>
+```text
+API_TOKEN=<optional-secret>
 MUSETALK_BATCH_SIZE=8
 MUSETALK_FPS=25
 API_PORT=8000
-WAN_MODEL_DIR=/data/models/Wan2.1-T2V-1.3B
+FAST_VOICE_LENGTH_SCALE=0.84
+NORMAL_VOICE_LENGTH_SCALE=1.0
 ```
 
-La primera solicitud a `POST /promos` descarga los pesos de Wan2.1 a
-`WAN_MODEL_DIR`. Reserva al menos 12 GB libres adicionales en el almacenamiento
-del contenedor. Las solicitudes posteriores reutilizan esos pesos.
+`FAST_PROMO_AVATAR_PATH` defaults to `/app/assets/default_3d_presenter.mp4`, which is bundled into the image. It can be overridden only when supplying a compatible replacement source in a custom image.
 
 ## API
 
-### Estado
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | GPU, queue, and fast-avatar readiness |
+| `GET` | `/studio` | Chat-style web interface |
+| `POST` | `/studio/request` | Create a fast promotion from a message |
+| `POST` | `/promos` | Create a fast promotion programmatically |
+| `POST` | `/jobs` | Lip-sync a supplied avatar URL |
+| `GET` | `/jobs/{job_id}` | Retrieve job status |
+| `GET` | `/jobs/{job_id}/video` | Download completed MP4 |
 
-`GET /health`
-
-### Crear video
-
-`POST /jobs`
-
-Ejemplo JSON:
-
-```json
-{
-  "text": "Cristo te ama y tiene un propósito para tu vida.",
-  "avatar_id": "presentador-1",
-  "avatar_url": "https://example.com/avatar.mp4"
-}
-```
-
-La primera vez que se usa un `avatar_id`, se envía `avatar_url`. En solicitudes posteriores se puede omitir para reutilizar el avatar preparado.
-
-### Panel tipo chat
-
-Abre `GET /studio` en el navegador. Pega tu `API_TOKEN` una sola vez y después
-puedes escribir órdenes normales como:
-
-> Crea una mujer joven tipo influencer, sonriente y moviendo las manos,
-> promocionando AZTV, que diga "Descarga AZTV y disfruta entretenimiento donde quieras."
-
-El panel crea el trabajo, muestra el progreso y presenta el MP4 cuando termina.
-También existe `POST /studio/request` para enviar una sola instrucción en lenguaje
-natural.
-
-### Crear promoción desde cero
-
-`POST /promos`
-
-Ejemplo:
+Example request:
 
 ```json
 {
-  "text": "Descarga AZTV y disfruta entretenimiento donde quieras.",
-  "person_prompt": "presentador joven latino, sonriente, ropa casual moderna",
+  "message": "Promociona AZTV y di \"Disfruta tus canales favoritos donde quieras. Descarga AZTV hoy.\"",
   "brand_text": "AZTV",
   "cta_text": "Descárgala hoy",
-  "orientation": "vertical",
-  "steps": 28
+  "voice_speed": "fast"
 }
 ```
 
-Flujo automático: Wan2.1 genera una persona en movimiento → Piper crea la voz →
-MuseTalk sincroniza los labios → FFmpeg agrega la marca y el CTA. Para usar un
-logo real, agrega `"logo_url": "https://.../logo.png"`.
+To use a custom animated avatar, add `"avatar_url": "https://example.com/animated-avatar.mp4"`. The URL must point directly to an MP4 file and the first preparation may take longer than later videos.
 
-El progreso aparece en `stage`, por ejemplo
-`downloading_video_model`, `generating_person_video`, `syncing_lips` y
-`adding_brand`.
+## Development checks
 
-### Revisar trabajo
-
-`GET /jobs/{job_id}`
-
-### Descargar resultado
-
-`GET /jobs/{job_id}/video`
-
-Si configuras `API_TOKEN`, usa:
-
-```
-Authorization: Bearer TU_TOKEN
+```bash
+python -m py_compile server/main.py
+python -m unittest discover -s tests -v
 ```
 
-## SaladCloud recomendado para este proyecto
-
-- GPU: RTX 3060 12 GB
-- vCPU: 4
-- RAM: 24 GB
-- Réplicas: 1
-- Puerto del contenedor: 8000
-- Almacenamiento recomendado con Wan2.1: 40 GB o más
-- Wan2.1 1.3B se ejecuta de forma secuencial con MuseTalk para compartir una sola GPU
-
-## Conexión con ChatGPT
-
-FastAPI expone automáticamente `/openapi.json`. Después de que el servidor esté funcionando, se puede colocar un pequeño servidor MCP delante de esta API para que ChatGPT cree trabajos, consulte su estado y recupere el video terminado.
-# Movimiento del avatar desde un video de referencia (pendiente de prueba GPU)
-
-La nueva sección de `/studio` recibe una foto PNG/JPG, un video de referencia
-y el texto hablado. `POST /motion-jobs` recibe los campos multipart `avatar`,
-`reference` y `text`, con la misma autenticación de los demás trabajos.
-
-El flujo es foto + referencia → MimicMotion → video corporal → Piper →
-MuseTalk → MP4. MuseTalk recibe el video generado, nunca la foto original como
-sustitución silenciosa si falla MimicMotion. Cada trabajo usa un avatar temporal
-distinto para evitar reutilizar un avatar inmóvil de la caché.
-
-La referencia debe durar al menos 2 segundos; se usan los primeros 8, a 15 fps.
-Conviene mostrar una sola persona y sus brazos/manos tanto en la foto como en el
-video. La transferencia es generativa: manos, objetos y personajes 3D requieren
-evaluación visual y no se garantiza una copia exacta. MuseTalk reutiliza su ciclo
-de fotogramas cuando la voz dura más que la referencia.
-
-La imagen Docker añade `/opt/motion-venv` aislado de MuseTalk y Wan. Se usa el
-checkpoint original de 16 fotogramas, resolución corta de 320 píxeles y decodificación
-por bloques de 2 para reducir memoria. Esto **no demuestra** que la ejecución
-completa entre en 12 GB: falta medirla en la RTX 3060 del despliegue. DWPose usa
-CPU; el generador usa CUDA. El primer trabajo descarga pesos oficiales de Tencent,
-DWPose y SVD; necesita espacio libre y el acceso/licencia que requiera el proveedor.
-`motion_installed` en `/health` comprueba instalación, no descarga ni inferencia.
-
-Los errores de inferencia quedan en `/data/jobs/<id>-motion.log`. La API marca
-el trabajo como fallido y limpia sus archivos temporales. El Studio descarga los
-MP4 con autorización antes de reproducirlos y no reconstruye el reproductor en
-cada consulta de estado sin cambios.
-
-Validación sin GPU: `python -m unittest discover -s tests -v`. Estas pruebas
-comprueban el orden movimiento→labios, el rechazo de fallos y límites de archivos;
-no comprueban pesos, CUDA, calidad de movimiento ni sincronización real.
+The checks validate job orchestration and the fast path. They do not substitute for a GPU run with the MuseTalk weights.

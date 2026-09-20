@@ -6,10 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HUB_DISABLE_TELEMETRY=1 \
     MUSETALK_HOME=/opt/MuseTalk \
     DATA_DIR=/data \
-    API_PORT=8000 \
-    WAN_HOME=/opt/Wan2.1 \
-    WAN_PYTHON=/opt/wan-venv/bin/python \
-    WAN_MODEL_DIR=/data/models/Wan2.1-T2V-1.3B
+    API_PORT=8000
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-dev python3-venv \
@@ -48,34 +45,9 @@ RUN grep -v -E '^(tensorflow|tensorboard|gradio)' requirements.txt > /tmp/museta
 COPY requirements-api.txt /tmp/requirements-api.txt
 RUN python -m pip install -r /tmp/requirements-api.txt
 
-# Wan2.1 text-to-video runs in a separate Python environment so MuseTalk can
-# keep its recommended PyTorch 2.0.1 stack unchanged.
-ARG WAN_COMMIT=9737cba9c1c3c4d04b33fcad41c111989865d315
-RUN git clone https://github.com/Wan-Video/Wan2.1.git /opt/Wan2.1 && \
-    cd /opt/Wan2.1 && \
-    git checkout "${WAN_COMMIT}"
-
-COPY requirements-wan.txt /tmp/requirements-wan.txt
-RUN python3 -m venv /opt/wan-venv && \
-    /opt/wan-venv/bin/pip install --upgrade pip setuptools wheel && \
-    /opt/wan-venv/bin/pip install \
-      torch==2.4.0 torchvision==0.19.0 \
-      --index-url https://download.pytorch.org/whl/cu118 && \
-    /opt/wan-venv/bin/pip install -r /tmp/requirements-wan.txt && \
-    /opt/wan-venv/bin/python -c "import torch; print('Wan2.1 torch', torch.__version__)"
-
-# Reference-motion transfer uses its own dependency stack as well.
-ARG MOTION_COMMIT=6907bdcc259a6a048d41a365e840d22274f9256c
-RUN git clone https://github.com/Tencent/MimicMotion.git /opt/MimicMotion && \
-    cd /opt/MimicMotion && git checkout "${MOTION_COMMIT}"
-COPY requirements-motion.txt /tmp/requirements-motion.txt
-RUN python3 -m venv /opt/motion-venv && \
-    /opt/motion-venv/bin/pip install --upgrade pip && \
-    /opt/motion-venv/bin/pip install torch==2.0.1 torchvision==0.15.2 \
-      --index-url https://download.pytorch.org/whl/cu118 && \
-    /opt/motion-venv/bin/pip install -r /tmp/requirements-motion.txt && \
-    /opt/motion-venv/bin/python -c "import diffusers, decord, onnxruntime, av"
-ENV MOTION_HOME=/opt/MimicMotion MOTION_PYTHON=/opt/motion-venv/bin/python
+# Fast chat mode deliberately omits Wan2.1 and MimicMotion. Both require large
+# additional model stacks and make interactive jobs impractical on a 12 GB GPU.
+# The image ships a reusable animated 3D source clip and relies on MuseTalk.
 
 # Download only the weights used by MuseTalk 1.5 inference.
 RUN mkdir -p models/musetalkV15 models/sd-vae models/whisper models/dwpose models/face-parse-bisent && \
