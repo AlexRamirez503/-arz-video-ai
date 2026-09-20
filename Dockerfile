@@ -58,12 +58,17 @@ RUN mkdir -p models/musetalkV15 models/sd-vae models/whisper models/dwpose model
     python -c "from huggingface_hub import snapshot_download; snapshot_download('yzd-v/DWPose', local_dir='models/dwpose', allow_patterns=['dw-ll_ucoco_384.pth'])" && \
     python -c "from huggingface_hub import snapshot_download; snapshot_download('ManyOtherFunctions/face-parse-bisent', local_dir='models/face-parse-bisent', allow_patterns=['79999_iter.pth','resnet18-5c106cde.pth'])"
 
-# Piper Mexican Spanish voice.
+# Piper Spanish voices. The Studio defaults to the masculine Davefx voice while
+# retaining the Mexican Ald voice as an optional feminine choice.
 RUN mkdir -p /opt/voices && \
     wget -q -O /opt/voices/es_MX-ald-medium.onnx \
       https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/ald/medium/es_MX-ald-medium.onnx && \
     wget -q -O /opt/voices/es_MX-ald-medium.onnx.json \
-      https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/ald/medium/es_MX-ald-medium.onnx.json
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/ald/medium/es_MX-ald-medium.onnx.json && \
+    wget -q -O /opt/voices/es_ES-davefx-medium.onnx \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx && \
+    wget -q -O /opt/voices/es_ES-davefx-medium.onnx.json \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx.json
 
 # Put generated/cached files outside the application tree.
 RUN mkdir -p /data/results /data/jobs /data/sources /data/models && \

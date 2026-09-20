@@ -22,7 +22,7 @@ class FastPromoWorkerTests(unittest.TestCase):
         self.events = []
         self.states = {}
 
-        def synthesize(text, wav, length_scale):
+        def synthesize(text, wav, length_scale, voice_model=None):
             self.events.append(("speech", length_scale, text))
             Path(wav).write_bytes(b"voice")
 
@@ -44,6 +44,8 @@ class FastPromoWorkerTests(unittest.TestCase):
             "FPS": 25,
             "FAST_VOICE_LENGTH_SCALE": 0.84,
             "NORMAL_VOICE_LENGTH_SCALE": 1.0,
+            "MALE_VOICE_MODEL": self.root / "male.onnx",
+            "STUDIO_VOICE_MODELS": {"male": self.root / "male.onnx"},
             "set_job": lambda job, **changes: self.states.update(changes),
             "init_engine": lambda: self.events.append("engine"),
             "ensure_promo_avatar": lambda payload: self._avatar,
@@ -53,6 +55,7 @@ class FastPromoWorkerTests(unittest.TestCase):
             "cleanup_outputs": lambda: self.events.append("cleanup"),
         }
         self._avatar = Mock(inference=inference)
+        (self.root / "male.onnx").write_bytes(b"voice")
         module = ast.parse(MAIN_PATH.read_text())
         fn = next(
             node for node in module.body
@@ -67,6 +70,7 @@ class FastPromoWorkerTests(unittest.TestCase):
             "text": "Descarga AZTV hoy.",
             "brand_text": "AZTV",
             "cta_text": "Descárgala hoy",
+            "voice": "male",
             "voice_speed": "fast",
         }
         self.ns["run_promo_job"](self.job_id, payload)
@@ -85,6 +89,7 @@ class FastPromoWorkerTests(unittest.TestCase):
             "text": "Hola.",
             "brand_text": "AZTV",
             "cta_text": "",
+            "voice": "male",
             "voice_speed": "normal",
         }
         self.ns["run_promo_job"](self.job_id, payload)

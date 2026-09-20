@@ -24,11 +24,21 @@ from motion import motion_available, run_motion, save_upload
 
 MUSETALK_HOME = Path(os.getenv("MUSETALK_HOME", "/opt/MuseTalk")).resolve()
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
-VOICE_MODEL = Path(os.getenv("PIPER_VOICE", "/opt/voices/es_MX-ald-medium.onnx"))
+FEMALE_VOICE_MODEL = Path(
+    os.getenv("PIPER_FEMALE_VOICE", "/opt/voices/es_MX-ald-medium.onnx")
+).resolve()
+MALE_VOICE_MODEL = Path(
+    os.getenv("PIPER_MALE_VOICE", "/opt/voices/es_ES-davefx-medium.onnx")
+).resolve()
+STUDIO_VOICE_MODELS = {
+    "male": MALE_VOICE_MODEL,
+    "female": FEMALE_VOICE_MODEL,
+}
 API_TOKEN = os.getenv("API_TOKEN", "")
 STUDIO_ACCESS_KEY = os.getenv("STUDIO_ACCESS_KEY", "")
 STUDIO_SESSION_COOKIE = "aztv_studio_session"
 STUDIO_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
+STUDIO_HTML_PATH = Path(__file__).with_name("studio.html")
 PORT = int(os.getenv("API_PORT", "8000"))
 BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "8"))
 FPS = int(os.getenv("MUSETALK_FPS", "25"))
@@ -106,23 +116,25 @@ class StudioRequest(BaseModel):
     avatar_url: Optional[HttpUrl] = None
     brand_text: str = Field(default="AZTV", min_length=1, max_length=80)
     cta_text: str = Field(default="Descárgala hoy", max_length=120)
+    voice: Literal["male", "female"] = "male"
     voice_speed: Literal["fast", "normal"] = "fast"
     visual_mode: Literal["cinematic", "avatar"] = "cinematic"
 
 
-def has_studio_session(studio_session: Optional[str]) -> bool:
+def has_studio_access(access_value: Optional[str]) -> bool:
     return bool(
         STUDIO_ACCESS_KEY
-        and studio_session
-        and hmac.compare_digest(studio_session, STUDIO_ACCESS_KEY)
+        and access_value
+        and hmac.compare_digest(access_value, STUDIO_ACCESS_KEY)
     )
 
 
 def require_auth(
     authorization: Optional[str] = Header(default=None),
     studio_session: Optional[str] = Cookie(default=None, alias=STUDIO_SESSION_COOKIE),
+    studio_access: Optional[str] = Header(default=None, alias="X-Studio-Access"),
 ):
-    if has_studio_session(studio_session):
+    if has_studio_access(studio_session) or has_studio_access(studio_access):
         return
     if not API_TOKEN:
         return
@@ -333,10 +345,11 @@ def synthesize_speech(
     text: str,
     output_wav: Path,
     length_scale: float = NORMAL_VOICE_LENGTH_SCALE,
+    voice_model: Path = FEMALE_VOICE_MODEL,
 ):
     cmd = [
         "piper",
-        "--model", str(VOICE_MODEL),
+        "--model", str(voice_model),
         "--output_file", str(output_wav),
         "--length-scale", str(length_scale),
         "--sentence-silence", "0.08",
@@ -645,7 +658,15 @@ def run_promo_job(job_id: str, payload: dict):
             if payload.get("voice_speed", "fast") == "fast"
             else NORMAL_VOICE_LENGTH_SCALE
         )
-        synthesize_speech(payload["text"], wav_path, length_scale=length_scale)
+        voice_model = STUDIO_VOICE_MODELS.get(payload.get("voice", "male"), MALE_VOICE_MODEL)
+        if not voice_model.is_file():
+            raise RuntimeError(f"No está instalada la voz seleccionada: {voice_model.name}")
+        synthesize_speech(
+            payload["text"],
+            wav_path,
+            length_scale=length_scale,
+            voice_model=voice_model,
+        )
 
         set_job(job_id, stage="syncing_avatar")
         avatar.inference(
@@ -983,10 +1004,13 @@ def studio(
     access_key: Optional[str] = Query(default=None, alias="access"),
     studio_session: Optional[str] = Cookie(default=None, alias=STUDIO_SESSION_COOKIE),
 ):
-    """Open Studio only through a private link, then remove its key from the URL."""
+    """Open Studio through its private link without relying solely on a browser cookie."""
     if STUDIO_ACCESS_KEY:
         if access_key and hmac.compare_digest(access_key, STUDIO_ACCESS_KEY):
-            response = RedirectResponse(url="/studio", status_code=303)
+            # Safari can drop a freshly-created cookie during a redirect opened from
+            # an in-app browser. Serve the Studio directly instead; its JavaScript
+            # keeps the access value only for this tab and removes it from the URL.
+            response = HTMLResponse(STUDIO_HTML_PATH.read_text(encoding="utf-8"))
             response.set_cookie(
                 key=STUDIO_SESSION_COOKIE,
                 value=STUDIO_ACCESS_KEY,
@@ -997,23 +1021,30 @@ def studio(
                 path="/",
             )
             return response
-        if not has_studio_session(studio_session):
+        if not has_studio_access(studio_session):
             raise HTTPException(status_code=401, detail="Abre tu enlace privado del Studio.")
-    return HTMLResponse(Path(__file__).with_name("studio.html").read_text(encoding="utf-8"))
+    return HTMLResponse(STUDIO_HTML_PATH.read_text(encoding="utf-8"))
 
 
 @app.post("/studio/request", status_code=202, dependencies=[Depends(require_auth)])
 def studio_request(request: StudioRequest):
-    parsed = parse_studio_message(request.message)
     job_id = uuid.uuid4().hex
     avatar_url = str(request.avatar_url) if request.avatar_url else None
     payload = {
         "kind": "promo",
-        **parsed,
+        # The Studio is an exact-script tool: the presenter says precisely what
+        # the user enters rather than trying to extract a fragment from a prompt.
+        "text": request.message.strip(),
+        "person_prompt": "Presentadora 3D de AZTV",
+        "logo_url": None,
+        "orientation": "vertical",
+        "steps": 28,
+        "seed": -1,
         "avatar_id": FAST_PROMO_AVATAR_ID if not avatar_url else f"custom-{job_id[:16]}",
         "avatar_url": avatar_url,
         "brand_text": request.brand_text.strip(),
         "cta_text": request.cta_text.strip(),
+        "voice": request.voice,
         "voice_speed": request.voice_speed,
         "visual_mode": request.visual_mode,
     }
@@ -1049,6 +1080,7 @@ def create_promo(request: PromoRequest):
         "cta_text": request.cta_text.strip(),
         "logo_url": str(request.logo_url) if request.logo_url else None,
         "orientation": request.orientation,
+        "voice": "male",
         "voice_speed": "fast",
         "steps": request.steps,
         "seed": request.seed,
