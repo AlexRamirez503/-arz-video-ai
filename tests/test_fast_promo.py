@@ -46,6 +46,7 @@ class FastPromoWorkerTests(unittest.TestCase):
             "NORMAL_VOICE_LENGTH_SCALE": 1.0,
             "MALE_VOICE_MODEL": self.root / "male.onnx",
             "STUDIO_VOICE_MODELS": {"male": self.root / "male.onnx"},
+            "studio_voice_text": lambda text: text,
             "set_job": lambda job, **changes: self.states.update(changes),
             "init_engine": lambda: self.events.append("engine"),
             "ensure_promo_avatar": lambda payload: self._avatar,

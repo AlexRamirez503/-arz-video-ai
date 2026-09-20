@@ -71,6 +71,19 @@ class StudioAccessTests(unittest.TestCase):
 
 
 class StudioScriptTests(unittest.TestCase):
+    def test_pronunciation_expands_only_the_aztv_brand_abbreviation(self):
+        module = ast.parse(MAIN_PATH.read_text(encoding="utf-8"))
+        fn = next(
+            node for node in module.body
+            if isinstance(node, ast.FunctionDef) and node.name == "studio_voice_text"
+        )
+        ns = {"re": __import__("re")}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "main.py", "exec"), ns)
+        self.assertEqual(
+            ns["studio_voice_text"]("Mira AZTV hoy."),
+            "Mira A Zeta Te Ve hoy.",
+        )
+
     def test_studio_queues_the_exact_user_script_with_male_voice(self):
         module = ast.parse(MAIN_PATH.read_text(encoding="utf-8"))
         fn = next(

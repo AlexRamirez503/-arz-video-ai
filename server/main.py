@@ -117,7 +117,7 @@ class StudioRequest(BaseModel):
     brand_text: str = Field(default="AZTV", min_length=1, max_length=80)
     cta_text: str = Field(default="Descárgala hoy", max_length=120)
     voice: Literal["male", "female"] = "male"
-    voice_speed: Literal["fast", "normal"] = "fast"
+    voice_speed: Literal["fast", "normal"] = "normal"
     visual_mode: Literal["cinematic", "avatar"] = "cinematic"
 
 
@@ -355,6 +355,15 @@ def synthesize_speech(
         "--sentence-silence", "0.08",
     ]
     subprocess.run(cmd, input=text, text=True, check=True)
+
+
+def studio_voice_text(script: str) -> str:
+    """Keep the user's script while expanding product abbreviations for TTS clarity."""
+    speech = script.strip()
+    # Piper reads AZTV inconsistently as a made-up word. Separating the letters
+    # gives a clear Spanish brand pronunciation without changing the visible text.
+    speech = re.sub(r"\bAZTV\b", "A Zeta Te Ve", speech, flags=re.IGNORECASE)
+    return speech
 
 
 def wan_model_ready() -> bool:
@@ -662,7 +671,7 @@ def run_promo_job(job_id: str, payload: dict):
         if not voice_model.is_file():
             raise RuntimeError(f"No está instalada la voz seleccionada: {voice_model.name}")
         synthesize_speech(
-            payload["text"],
+            studio_voice_text(payload["text"]),
             wav_path,
             length_scale=length_scale,
             voice_model=voice_model,
