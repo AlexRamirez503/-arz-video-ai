@@ -64,6 +64,19 @@ RUN python3 -m venv /opt/wan-venv && \
     /opt/wan-venv/bin/pip install -r /tmp/requirements-wan.txt && \
     /opt/wan-venv/bin/python -c "import torch; print('Wan2.1 torch', torch.__version__)"
 
+# Reference-motion transfer uses its own dependency stack as well.
+ARG MOTION_COMMIT=6907bdcc259a6a048d41a365e840d22274f9256c
+RUN git clone https://github.com/Tencent/MimicMotion.git /opt/MimicMotion && \
+    cd /opt/MimicMotion && git checkout "${MOTION_COMMIT}"
+COPY requirements-motion.txt /tmp/requirements-motion.txt
+RUN python3 -m venv /opt/motion-venv && \
+    /opt/motion-venv/bin/pip install --upgrade pip && \
+    /opt/motion-venv/bin/pip install torch==2.0.1 torchvision==0.15.2 \
+      --index-url https://download.pytorch.org/whl/cu118 && \
+    /opt/motion-venv/bin/pip install -r /tmp/requirements-motion.txt && \
+    /opt/motion-venv/bin/python -c "import diffusers, decord, onnxruntime, av"
+ENV MOTION_HOME=/opt/MimicMotion MOTION_PYTHON=/opt/motion-venv/bin/python
+
 # Download only the weights used by MuseTalk 1.5 inference.
 RUN mkdir -p models/musetalkV15 models/sd-vae models/whisper models/dwpose models/face-parse-bisent && \
     python -m pip install "huggingface_hub==0.30.2" && \
@@ -86,7 +99,7 @@ RUN mkdir -p /data/results /data/jobs /data/sources /data/models && \
     ln -s /data/results /opt/MuseTalk/results
 
 COPY server /app
-RUN python -m py_compile /app/main.py
+RUN python -m py_compile /app/main.py /app/motion.py /app/motion_inference.py
 ENV PYTHONPATH=/opt/MuseTalk
 
 EXPOSE 8000

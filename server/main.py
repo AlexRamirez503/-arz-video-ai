@@ -15,9 +15,11 @@ from typing import Literal, Optional
 import cv2
 import requests
 import torch
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field, HttpUrl
+
+from motion import motion_available, run_motion, save_upload
 
 MUSETALK_HOME = Path(os.getenv("MUSETALK_HOME", "/opt/MuseTalk")).resolve()
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
@@ -623,11 +625,47 @@ def run_one_job(job_id: str, payload: dict):
         wav_path.unlink(missing_ok=True)
 
 
+def run_motion_job(job_id: str, payload: dict):
+    """Generate body motion first; MuseTalk must receive the moving MP4."""
+    work = Path(payload["work_dir"])
+    wav_path = work / "speech.wav"
+    final_path = JOBS_DIR / f"{job_id}.mp4"
+    avatar_id = f"motion-{job_id[:16]}"
+    set_job(job_id, status="running", stage="generating_body_motion", started_at=time.time())
+    try:
+        release_musetalk_engine()
+        moving_video = run_motion(work, JOBS_DIR / f"{job_id}-motion.log")
+        set_job(job_id, stage="loading_lipsync")
+        avatar = prepare_avatar_from_local(avatar_id, moving_video)
+        set_job(job_id, stage="synthesizing_speech")
+        synthesize_speech(payload["text"], wav_path)
+        set_job(job_id, stage="syncing_lips")
+        avatar.inference(audio_path=str(wav_path), out_vid_name=job_id,
+                         fps=FPS, skip_save_images=False)
+        produced = avatar_base(avatar_id) / "vid_output" / f"{job_id}.mp4"
+        if not produced.is_file() or produced.stat().st_size == 0:
+            raise RuntimeError("MuseTalk no generó el video con movimiento y voz")
+        shutil.copy2(produced, final_path)
+        set_job(job_id, status="done", stage="done", finished_at=time.time(),
+                video_path=str(final_path), video_endpoint=f"/jobs/{job_id}/video")
+        cleanup_outputs()
+    except Exception as exc:
+        set_job(job_id, status="error", stage="error", finished_at=time.time(),
+                error=f"{type(exc).__name__}: {exc}")
+    finally:
+        avatar_cache.pop(avatar_id, None)
+        shutil.rmtree(avatar_base(avatar_id), ignore_errors=True)
+        (SOURCES_DIR / f"{avatar_id}.mp4").unlink(missing_ok=True)
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def worker_loop():
     while True:
         job_id, payload = job_queue.get()
         try:
-            if payload.get("kind") == "promo":
+            if payload.get("kind") == "motion":
+                run_motion_job(job_id, payload)
+            elif payload.get("kind") == "promo":
                 run_promo_job(job_id, payload)
             else:
                 run_one_job(job_id, payload)
@@ -659,7 +697,40 @@ def health():
         "queued_jobs": job_queue.qsize(),
         "musetalk_loaded": engine_ready,
         "wan_model_ready": wan_model_ready(),
+        "motion_installed": motion_available(),
     }
+
+
+@app.post("/motion-jobs", status_code=202, dependencies=[Depends(require_auth)])
+def create_motion_job(
+    text: str = Form(..., min_length=1, max_length=800),
+    avatar: UploadFile = File(...),
+    reference: UploadFile = File(...),
+):
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="Escribe lo que debe decir el avatar")
+    if not motion_available():
+        raise HTTPException(status_code=503, detail="El motor de movimiento todavía no está instalado")
+    job_id = uuid.uuid4().hex
+    work = SOURCES_DIR / f"motion-{job_id}"
+    work.mkdir()
+    try:
+        save_upload(avatar.file, work / "avatar.source", 20 * 1024 * 1024)
+        save_upload(reference.file, work / "reference.source", 100 * 1024 * 1024)
+    except ValueError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=str(exc))
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    finally:
+        avatar.file.close()
+        reference.file.close()
+    set_job(job_id, id=job_id, kind="motion", status="queued", stage="queued",
+            created_at=time.time())
+    job_queue.put((job_id, {"kind": "motion", "text": text.strip(), "work_dir": str(work)}))
+    return {"id": job_id, "status": "queued", "status_endpoint": f"/jobs/{job_id}",
+            "video_endpoint": f"/jobs/{job_id}/video"}
 
 
 @app.get("/avatars", dependencies=[Depends(require_auth)])
@@ -819,7 +890,18 @@ a.download{display:block;background:#fff;color:#000;text-decoration:none;text-al
 <div class="card">
 <label>API Token</label>
 <input id="token" type="password" placeholder="Pega tu token una sola vez">
-<div class="example">Se guarda únicamente en este navegador.</div>
+<div class="example">Solo es necesario si el servidor tiene un token configurado. Se guarda en este navegador.</div>
+</div>
+
+<div class="card">
+<label for="avatarImage">Foto de tu avatar</label>
+<input id="avatarImage" type="file" accept="image/png,image/jpeg">
+<label for="motionReference">Video con los movimientos</label>
+<input id="motionReference" type="file" accept="video/*">
+<div class="example">Se usan los primeros 8 segundos (mínimo 2). El cuerpo y las manos deben verse bien en ambos archivos. Si la voz dura más, el movimiento se repite.</div>
+<label for="motionSpeech">¿Qué debe decir tu avatar?</label>
+<textarea id="motionSpeech" maxlength="800" placeholder="Escribe aquí el texto que dirá tu avatar"></textarea>
+<button id="sendMotion">Animar mi avatar con estos movimientos</button>
 </div>
 
 <div class="card">
@@ -841,6 +923,21 @@ const notice=document.getElementById('notice');
 tokenEl.value=localStorage.getItem('aztv_api_token')||'';
 tokenEl.addEventListener('change',()=>localStorage.setItem('aztv_api_token',tokenEl.value.trim()));
 let jobs=JSON.parse(localStorage.getItem('aztv_studio_jobs')||'[]');
+const videoUrls=new Map();
+const loadingVideos=new Set();
+
+async function loadVideo(j){
+  if(videoUrls.has(j.id)||loadingVideos.has(j.id)) return;
+  loadingVideos.add(j.id);
+  try{
+    const r=await fetch('/jobs/'+j.id+'/video',{headers:{'Authorization':'Bearer '+tokenEl.value.trim()}});
+    if(!r.ok) throw new Error('No se pudo abrir el video ('+r.status+'). Revisa el token.');
+    videoUrls.set(j.id,URL.createObjectURL(await r.blob()));
+    render();
+  }catch(e){notice.textContent=e.message;}
+  finally{loadingVideos.delete(j.id);}
+}
+window.addEventListener('beforeunload',()=>videoUrls.forEach(url=>URL.revokeObjectURL(url)));
 
 function headers(){return {'Authorization':'Bearer '+tokenEl.value.trim(),'Content-Type':'application/json'};}
 function save(){localStorage.setItem('aztv_studio_jobs',JSON.stringify(jobs.slice(0,30)));}
@@ -851,8 +948,12 @@ function render(){
     const el=document.createElement('div'); el.className='msg';
     let cls=j.status==='done'?'done':j.status==='error'?'error':j.status==='running'?'running':'queued';
     let media='';
-    if(j.status==='done') media='<video controls playsinline src="/jobs/'+j.id+'/video"></video><a class="download" href="/jobs/'+j.id+'/video" target="_blank">Abrir / descargar MP4</a>';
-    if(j.status==='error') media='<div style="color:#fca5a5;margin-top:8px">'+(j.error||'Error')+'</div>';
+    if(j.status==='done'){
+      const url=videoUrls.get(j.id);
+      if(url) media='<video controls playsinline src="'+url+'"></video><a class="download" href="'+url+'" download="avatar.mp4">Descargar MP4</a>';
+      else {media='<div>Preparando video...</div>';loadVideo(j);}
+    }
+    if(j.status==='error') media='<div style="color:#fca5a5;margin-top:8px">'+escapeHtml(j.error||'Error')+'</div>';
     el.innerHTML='<span class="badge '+cls+'">'+(j.stage||j.status||'queued')+'</span><div>'+escapeHtml(j.message)+'</div>'+media+'<div class="small">'+j.id+'</div>';
     chat.appendChild(el);
   });
@@ -860,22 +961,42 @@ function render(){
 function escapeHtml(s){return (s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
 
 async function poll(){
+  let changed=false;
   for(const j of jobs){
     if(!j.id || j.status==='done' || j.status==='error') continue;
     try{
       const r=await fetch('/jobs/'+j.id,{headers:{'Authorization':'Bearer '+tokenEl.value.trim()}});
       if(!r.ok) continue;
       const d=await r.json();
+      if(j.status!==d.status||j.stage!==(d.stage||d.status)||j.error!==(d.error||'')) changed=true;
       j.status=d.status||j.status; j.stage=d.stage||d.status||j.stage; j.error=d.error||'';
     }catch(e){}
   }
-  save(); render();
+  if(changed){save(); render();}
 }
 setInterval(poll,6000);
 
+document.getElementById('sendMotion').onclick=async()=>{
+  const button=document.getElementById('sendMotion');
+  const avatar=document.getElementById('avatarImage').files[0];
+  const reference=document.getElementById('motionReference').files[0];
+  const text=document.getElementById('motionSpeech').value.trim();
+  if(!avatar||!reference||!text){notice.textContent='Selecciona la foto, el video de movimientos y escribe la voz.';return;}
+  if(avatar.size>20*1024*1024||reference.size>100*1024*1024){notice.textContent='Máximo: foto 20 MB y video 100 MB.';return;}
+  const form=new FormData();form.append('avatar',avatar);form.append('reference',reference);form.append('text',text);
+  button.disabled=true;notice.textContent='Subiendo tu avatar y los movimientos...';
+  try{
+    const r=await fetch('/motion-jobs',{method:'POST',headers:{'Authorization':'Bearer '+tokenEl.value.trim()},body:form});
+    const d=await r.json();
+    if(!r.ok) throw new Error(typeof d.detail==='string'?d.detail:'No se pudo iniciar la animación');
+    jobs.unshift({id:d.id,message:'Mi avatar con movimientos: '+text,status:'queued',stage:'queued'});
+    save();render();notice.textContent='Animación en cola. La primera ejecución descarga los modelos y puede tardar.';
+  }catch(e){notice.textContent=e.message;}
+  finally{button.disabled=false;}
+};
+
 sendEl.onclick=async()=>{
   const token=tokenEl.value.trim(), message=msgEl.value.trim();
-  if(!token){notice.textContent='Primero pega tu API Token.';return;}
   if(!message){notice.textContent='Escribe lo que quieres crear.';return;}
   localStorage.setItem('aztv_api_token',token);
   sendEl.disabled=true; notice.textContent='Enviando...';
