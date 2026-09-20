@@ -1,4 +1,5 @@
 import gc
+import hmac
 import os
 import queue
 import re
@@ -15,8 +16,8 @@ from typing import Literal, Optional
 import cv2
 import requests
 import torch
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, HttpUrl
 
 from motion import motion_available, run_motion, save_upload
@@ -25,6 +26,9 @@ MUSETALK_HOME = Path(os.getenv("MUSETALK_HOME", "/opt/MuseTalk")).resolve()
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
 VOICE_MODEL = Path(os.getenv("PIPER_VOICE", "/opt/voices/es_MX-ald-medium.onnx"))
 API_TOKEN = os.getenv("API_TOKEN", "")
+STUDIO_ACCESS_KEY = os.getenv("STUDIO_ACCESS_KEY", "")
+STUDIO_SESSION_COOKIE = "aztv_studio_session"
+STUDIO_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 PORT = int(os.getenv("API_PORT", "8000"))
 BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "8"))
 FPS = int(os.getenv("MUSETALK_FPS", "25"))
@@ -98,7 +102,20 @@ class StudioRequest(BaseModel):
     voice_speed: Literal["fast", "normal"] = "fast"
 
 
-def require_auth(authorization: Optional[str] = Header(default=None)):
+def has_studio_session(studio_session: Optional[str]) -> bool:
+    return bool(
+        STUDIO_ACCESS_KEY
+        and studio_session
+        and hmac.compare_digest(studio_session, STUDIO_ACCESS_KEY)
+    )
+
+
+def require_auth(
+    authorization: Optional[str] = Header(default=None),
+    studio_session: Optional[str] = Cookie(default=None, alias=STUDIO_SESSION_COOKIE),
+):
+    if has_studio_session(studio_session):
+        return
     if not API_TOKEN:
         return
     expected = f"Bearer {API_TOKEN}"
@@ -883,7 +900,26 @@ def parse_studio_message(message: str):
 
 
 @app.get("/studio", response_class=HTMLResponse)
-def studio():
+def studio(
+    access_key: Optional[str] = Query(default=None, alias="access"),
+    studio_session: Optional[str] = Cookie(default=None, alias=STUDIO_SESSION_COOKIE),
+):
+    """Open Studio only through a private link, then remove its key from the URL."""
+    if STUDIO_ACCESS_KEY:
+        if access_key and hmac.compare_digest(access_key, STUDIO_ACCESS_KEY):
+            response = RedirectResponse(url="/studio", status_code=303)
+            response.set_cookie(
+                key=STUDIO_SESSION_COOKIE,
+                value=STUDIO_ACCESS_KEY,
+                max_age=STUDIO_SESSION_MAX_AGE_SECONDS,
+                secure=True,
+                httponly=True,
+                samesite="strict",
+                path="/",
+            )
+            return response
+        if not has_studio_session(studio_session):
+            raise HTTPException(status_code=401, detail="Abre tu enlace privado del Studio.")
     return HTMLResponse(Path(__file__).with_name("studio.html").read_text(encoding="utf-8"))
 
 
