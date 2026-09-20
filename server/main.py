@@ -50,6 +50,8 @@ WAN_MODEL_DIR = Path(
 WAN_MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B")
 WAN_MODEL_MARKER = WAN_MODEL_DIR / ".download-complete"
 WAN_MODEL_MIN_FREE_GB = int(os.getenv("WAN_MODEL_MIN_FREE_GB", "12"))
+WAN_FREE_VIDEO_STEPS = int(os.getenv("WAN_FREE_VIDEO_STEPS", "24"))
+WAN_FREE_VIDEO_FRAME_COUNT = int(os.getenv("WAN_FREE_VIDEO_FRAME_COUNT", "81"))
 FAST_PROMO_AVATAR_ID = os.getenv("FAST_PROMO_AVATAR_ID", "promo3d")
 FAST_PROMO_AVATAR_PATH = Path(
     os.getenv("FAST_PROMO_AVATAR_PATH", "/app/assets/default_3d_presenter.mp4")
@@ -113,6 +115,9 @@ class PromoRequest(BaseModel):
 
 class StudioRequest(BaseModel):
     message: str = Field(min_length=3, max_length=1800)
+    mode: Literal["free_video", "avatar"] = "free_video"
+    free_style: Literal["cinematic", "cartoon", "illustration"] = "cinematic"
+    orientation: Literal["vertical", "landscape"] = "vertical"
     avatar_url: Optional[HttpUrl] = None
     brand_text: str = Field(default="AZTV", min_length=1, max_length=80)
     cta_text: str = Field(default="Descárgala hoy", max_length=120)
@@ -407,22 +412,47 @@ def build_person_prompt(person_prompt: str) -> str:
     )
 
 
+def build_free_video_prompt(request: str, style: str) -> str:
+    """Build a broad text-to-video prompt without restricting the requested subject."""
+    style_prefix = {
+        "cinematic": (
+            "High quality cinematic video, coherent motion, detailed scene, "
+            "natural lighting, stable composition."
+        ),
+        "cartoon": (
+            "High quality animated cartoon video, expressive movement, consistent "
+            "characters, colorful art direction, stable composition."
+        ),
+        "illustration": (
+            "High quality animated illustration video, polished art direction, "
+            "coherent movement, stable composition."
+        ),
+    }[style]
+    return (
+        f"{style_prefix} Create exactly this requested scene: {request.strip()}. "
+        "Show the requested subject and action clearly. No subtitles, no logos, no watermark."
+    )
+
+
 def run_wan_video(
     job_id: str,
-    person_prompt: str,
+    prompt: str,
     orientation: str,
     steps: int,
     seed: int,
 ) -> Path:
     with wan_lock:
         release_musetalk_engine()
+        if not WAN_HOME.is_dir() or not (WAN_HOME / "generate.py").is_file():
+            raise RuntimeError("El motor local Wan2.1 no está instalado en esta imagen")
+        if not WAN_PYTHON.is_file():
+            raise RuntimeError("El entorno del motor local Wan2.1 no está disponible")
         ensure_wan_model(job_id)
-        set_job(job_id, stage="generating_person_video")
+        set_job(job_id, stage="generating_free_video")
 
         size = "480*832" if orientation == "vertical" else "832*480"
         output = SOURCES_DIR / f"{job_id}-wan.mp4"
         log_path = JOBS_DIR / f"{job_id}-wan.log"
-        prompt = build_person_prompt(person_prompt)
 
         cmd = [
             str(WAN_PYTHON),
@@ -435,7 +465,7 @@ def run_wan_video(
             "--sample_shift", "8",
             "--sample_guide_scale", "6",
             "--sample_steps", str(steps),
-            "--frame_num", "81",
+            "--frame_num", str(WAN_FREE_VIDEO_FRAME_COUNT),
             "--prompt", prompt,
             "--save_file", str(output),
         ]
@@ -727,6 +757,45 @@ def run_promo_job(job_id: str, payload: dict):
         cinematic_path.unlink(missing_ok=True)
 
 
+def run_free_video_job(job_id: str, payload: dict):
+    """Generate an unrestricted local text-to-video clip with Wan2.1."""
+    final_path = JOBS_DIR / f"{job_id}.mp4"
+    generated_path = None
+    set_job(job_id, status="running", stage="preparing_free_video", started_at=time.time())
+    try:
+        prompt = build_free_video_prompt(payload["prompt"], payload["free_style"])
+        generated_path = run_wan_video(
+            job_id=job_id,
+            prompt=prompt,
+            orientation=payload["orientation"],
+            steps=payload["steps"],
+            seed=payload["seed"],
+        )
+        if not generated_path.is_file() or not generated_path.stat().st_size:
+            raise RuntimeError("Wan2.1 no generó el clip solicitado")
+        shutil.copy2(generated_path, final_path)
+        set_job(
+            job_id,
+            status="done",
+            stage="done",
+            finished_at=time.time(),
+            video_path=str(final_path),
+            video_endpoint=f"/jobs/{job_id}/video",
+        )
+        cleanup_outputs()
+    except Exception as exc:
+        set_job(
+            job_id,
+            status="error",
+            stage="error",
+            finished_at=time.time(),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        if generated_path:
+            generated_path.unlink(missing_ok=True)
+
+
 def cleanup_outputs(keep: int = 30):
     files = sorted(JOBS_DIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in files[keep:]:
@@ -821,6 +890,8 @@ def worker_loop():
         try:
             if payload.get("kind") == "motion":
                 run_motion_job(job_id, payload)
+            elif payload.get("kind") == "free_video":
+                run_free_video_job(job_id, payload)
             elif payload.get("kind") == "promo":
                 run_promo_job(job_id, payload)
             else:
@@ -853,6 +924,7 @@ def health():
         "queued_jobs": job_queue.qsize(),
         "musetalk_loaded": engine_ready,
         "wan_model_ready": wan_model_ready(),
+        "free_video_engine_installed": WAN_HOME.is_dir() and WAN_PYTHON.is_file(),
         "motion_installed": motion_available(),
         "fast_promo_avatar_source": FAST_PROMO_AVATAR_PATH.is_file(),
         "fast_promo_avatar_prepared": avatar_prepared(FAST_PROMO_AVATAR_ID),
@@ -1038,6 +1110,33 @@ def studio(
 @app.post("/studio/request", status_code=202, dependencies=[Depends(require_auth)])
 def studio_request(request: StudioRequest):
     job_id = uuid.uuid4().hex
+    if request.mode == "free_video":
+        payload = {
+            "kind": "free_video",
+            "prompt": request.message.strip(),
+            "free_style": request.free_style,
+            "orientation": request.orientation,
+            "steps": WAN_FREE_VIDEO_STEPS,
+            "seed": -1,
+        }
+        set_job(
+            job_id,
+            id=job_id,
+            kind="free_video",
+            status="queued",
+            stage="queued",
+            created_at=time.time(),
+            studio_message=request.message.strip(),
+            free_style=request.free_style,
+        )
+        job_queue.put((job_id, payload))
+        return {
+            "id": job_id,
+            "status": "queued",
+            "status_endpoint": f"/jobs/{job_id}",
+            "video_endpoint": f"/jobs/{job_id}/video",
+        }
+
     avatar_url = str(request.avatar_url) if request.avatar_url else None
     payload = {
         "kind": "promo",

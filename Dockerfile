@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-dev python3-venv \
-    git curl wget ca-certificates ffmpeg \
+    git curl wget ca-certificates ffmpeg patch \
     build-essential ninja-build pkg-config \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libsndfile1 espeak-ng fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
@@ -45,9 +45,24 @@ RUN grep -v -E '^(tensorflow|tensorboard|gradio)' requirements.txt > /tmp/museta
 COPY requirements-api.txt /tmp/requirements-api.txt
 RUN python -m pip install -r /tmp/requirements-api.txt
 
-# Fast chat mode deliberately omits Wan2.1 and MimicMotion. Both require large
-# additional model stacks and make interactive jobs impractical on a 12 GB GPU.
-# The image ships a reusable animated 3D source clip and relies on MuseTalk.
+# The avatar mode uses a reusable animated 3D source clip and MuseTalk. The
+# free-form mode below adds Wan2.1 as a deliberately slower, separate pathway.
+
+# Local free-form text-to-video mode. Wan is isolated in its own venv because it
+# requires a newer Torch release than the MuseTalk runtime. The model weights are
+# downloaded only on the first free-video request into the persistent /data disk.
+ARG WAN_COMMIT=9737cba9c1c3c4d04b33fcad41c111989865d315
+COPY requirements-wan.txt /tmp/requirements-wan.txt
+COPY docker/wan-torch-attention.patch /tmp/wan-torch-attention.patch
+RUN git clone https://github.com/Wan-Video/Wan2.1.git /opt/Wan2.1 && \
+    cd /opt/Wan2.1 && git checkout "${WAN_COMMIT}" && \
+    patch -p1 < /tmp/wan-torch-attention.patch && \
+    python3 -m venv /opt/wan-venv && \
+    /opt/wan-venv/bin/pip install --upgrade pip setuptools wheel && \
+    /opt/wan-venv/bin/pip install \
+      torch==2.4.1 torchvision==0.19.1 \
+      --index-url https://download.pytorch.org/whl/cu118 && \
+    /opt/wan-venv/bin/pip install -r /tmp/requirements-wan.txt
 
 # Download only the weights used by MuseTalk 1.5 inference.
 RUN mkdir -p models/musetalkV15 models/sd-vae models/whisper models/dwpose models/face-parse-bisent && \

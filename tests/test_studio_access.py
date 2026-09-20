@@ -68,6 +68,8 @@ class StudioAccessTests(unittest.TestCase):
         self.assertIn("sessionStorage.setItem('aztv_studio_access',privateAccess)", page)
         self.assertIn("history.replaceState(null,document.title,window.location.pathname)", page)
         self.assertIn("h['X-Studio-Access']=privateAccess", page)
+        self.assertIn('value="free_video"', page)
+        self.assertIn("Una casa colorida canta", page)
 
 
 class StudioScriptTests(unittest.TestCase):
@@ -97,6 +99,7 @@ class StudioScriptTests(unittest.TestCase):
             "uuid": uuid,
             "time": time,
             "FAST_PROMO_AVATAR_ID": "promo3d",
+            "WAN_FREE_VIDEO_STEPS": 24,
             "set_job": Mock(),
             "job_queue": job_queue,
         }
@@ -104,6 +107,9 @@ class StudioScriptTests(unittest.TestCase):
         script = "Hoy tienes una oferta especial. Descarga AZTV y disfruta tus favoritos."
         request = SimpleNamespace(
             message=script,
+            mode="avatar",
+            free_style="cinematic",
+            orientation="vertical",
             avatar_url=None,
             brand_text="AZTV",
             cta_text="Descárgala hoy",
@@ -117,6 +123,38 @@ class StudioScriptTests(unittest.TestCase):
         self.assertEqual(payload["text"], script)
         self.assertEqual(payload["voice"], "male")
         self.assertEqual(payload["visual_mode"], "cinematic")
+
+    def test_studio_queues_a_free_video_request_without_avatar_fields(self):
+        module = ast.parse(MAIN_PATH.read_text(encoding="utf-8"))
+        fn = next(
+            node for node in module.body
+            if isinstance(node, ast.FunctionDef) and node.name == "studio_request"
+        )
+        fn.decorator_list = []
+        job_queue = Mock()
+        ns = {
+            "StudioRequest": object,
+            "uuid": uuid,
+            "time": time,
+            "FAST_PROMO_AVATAR_ID": "promo3d",
+            "WAN_FREE_VIDEO_STEPS": 24,
+            "set_job": Mock(),
+            "job_queue": job_queue,
+        }
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "main.py", "exec"), ns)
+        request = SimpleNamespace(
+            message="Un niño en bicicleta cruza un parque soleado",
+            mode="free_video",
+            free_style="cinematic",
+            orientation="vertical",
+        )
+
+        ns["studio_request"](request)
+        _, payload = job_queue.put.call_args.args[0]
+        self.assertEqual(payload["kind"], "free_video")
+        self.assertEqual(payload["prompt"], request.message)
+        self.assertEqual(payload["free_style"], "cinematic")
+        self.assertNotIn("avatar_id", payload)
 
 
 if __name__ == "__main__":

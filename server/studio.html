@@ -5,33 +5,44 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>AZTV AI Studio</title>
 <style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#09090b;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.wrap{max-width:760px;margin:auto;min-height:100vh;padding:24px 14px 120px}h1{font-size:30px;margin:8px 4px 4px}.sub{color:#a1a1aa;margin:0 4px 24px;line-height:1.45}.card{background:#151519;border:1px solid #2b2b31;border-radius:20px;padding:16px;margin-bottom:14px}label{display:block;color:#c4c7cf;font-size:13px;margin:0 0 8px}input,textarea,select{width:100%;border:1px solid #35363f;background:#0e0e11;color:#fff;border-radius:14px;padding:13px;font-size:16px}textarea{min-height:128px;resize:vertical;line-height:1.4}select{appearance:auto}button{border:0;border-radius:14px;padding:14px 18px;font-size:16px;font-weight:800;background:#fff;color:#050505;width:100%;margin-top:16px}button:disabled{opacity:.45}.example{color:#9ca3af;font-size:13px;line-height:1.5;margin-top:9px}.msg{border-radius:18px;padding:14px;margin:12px 0;background:#17171c;border:1px solid #2b2b31}.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;margin-bottom:8px}.queued{background:#233452;color:#93c5fd}.running{background:#493b16;color:#fde68a}.done{background:#173d27;color:#86efac}.error{background:#4a1d24;color:#fda4af}video{width:100%;border-radius:14px;background:#000;margin-top:10px}a.download{display:block;background:#fff;color:#000;text-decoration:none;text-align:center;padding:12px;border-radius:12px;font-weight:800;margin-top:10px}.small{font-size:12px;color:#8a8d96;word-break:break-all}#notice{color:#fbbf24;font-size:13px;margin-top:12px;min-height:18px}.field{margin-top:16px}
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#09090b;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.wrap{max-width:760px;margin:auto;min-height:100vh;padding:24px 14px 120px}h1{font-size:30px;margin:8px 4px 4px}.sub{color:#a1a1aa;margin:0 4px 24px;line-height:1.45}.card{background:#151519;border:1px solid #2b2b31;border-radius:20px;padding:16px;margin-bottom:14px}label{display:block;color:#c4c7cf;font-size:13px;margin:0 0 8px}input,textarea,select{width:100%;border:1px solid #35363f;background:#0e0e11;color:#fff;border-radius:14px;padding:13px;font-size:16px}textarea{min-height:142px;resize:vertical;line-height:1.4}select{appearance:auto}button{border:0;border-radius:14px;padding:14px 18px;font-size:16px;font-weight:800;background:#fff;color:#050505;width:100%;margin-top:16px}button:disabled{opacity:.45}.example{color:#9ca3af;font-size:13px;line-height:1.5;margin-top:9px}.notice-card{color:#fde68a;background:#3d3216;border:1px solid #70591b;border-radius:14px;padding:12px;font-size:13px;line-height:1.45;margin-top:16px}.msg{border-radius:18px;padding:14px;margin:12px 0;background:#17171c;border:1px solid #2b2b31}.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;margin-bottom:8px}.queued{background:#233452;color:#93c5fd}.running{background:#493b16;color:#fde68a}.done{background:#173d27;color:#86efac}.error{background:#4a1d24;color:#fda4af}video{width:100%;border-radius:14px;background:#000;margin-top:10px}a.download{display:block;background:#fff;color:#000;text-decoration:none;text-align:center;padding:12px;border-radius:12px;font-weight:800;margin-top:10px}.small{font-size:12px;color:#8a8d96;word-break:break-all}#notice{color:#fbbf24;font-size:13px;margin-top:12px;min-height:18px}.field{margin-top:16px}[hidden]{display:none!important}
 </style>
 </head>
 <body><div class="wrap">
 <h1>AZTV AI Studio</h1>
-<p class="sub">Crea promociones rápidas con una presentadora 3D animada, voz masculina en español y labios sincronizados. Tu acceso privado ya está configurado.</p>
+<p class="sub">Crea un video libre desde una descripción o usa la presentadora 3D con voz. Tu acceso privado ya está configurado.</p>
 <div class="card">
-<label for="message">Guion exacto de la presentadora</label>
-<textarea id="message" maxlength="800" placeholder="Escribe las palabras exactas que debe decir. Ejemplo: Disfruta tus canales favoritos donde quieras. Descarga AZTV hoy."></textarea>
-<div class="example">La presentadora repetirá exactamente este texto. No necesitas escribir “que diga”.</div>
-<div class="field">
-<label for="avatarUrl">Avatar personalizado (opcional)</label>
-<input id="avatarUrl" type="url" placeholder="URL directa de un MP4">
-<div class="example">Si lo dejas vacío se usa la presentadora 3D incluida. Un MP4 propio permite usar tu propio avatar animado.</div>
+<div class="field"><label for="mode">¿Qué quieres crear?</label><select id="mode"><option value="free_video" selected>Crear cualquier video desde una descripción</option><option value="avatar">Avatar 3D hablando</option></select></div>
+<label id="messageLabel" for="message">Describe el video que quieres crear</label>
+<textarea id="message" maxlength="1800" placeholder="Ejemplo: Un niño en bicicleta cruza un parque soleado, la cámara lo sigue suavemente, estilo cinematográfico."></textarea>
+<div id="messageHelp" class="example">Puedes pedir una casa cantando, dibujos animados, personas, animales, objetos o cualquier escena. Describe el sujeto, la acción, el lugar y el estilo.</div>
+<div id="freeFields">
+<div class="field"><label for="freeStyle">Estilo visual</label><select id="freeStyle"><option value="cinematic">Cinemático realista</option><option value="cartoon">Dibujos animados</option><option value="illustration">Ilustración animada</option></select></div>
+<div class="field"><label for="orientation">Formato</label><select id="orientation"><option value="vertical" selected>Vertical — TikTok, Reels, Shorts</option><option value="landscape">Horizontal — YouTube</option></select></div>
+<div class="notice-card">Este modo usa la RTX 3060 local. Genera un clip de aproximadamente cinco segundos y puede tardar varios minutos. La primera generación tardará más porque descarga el modelo de video.</div>
 </div>
+<div id="avatarFields" hidden>
+<div class="field"><label for="avatarUrl">Avatar personalizado (opcional)</label><input id="avatarUrl" type="url" placeholder="URL directa de un MP4"><div class="example">Si lo dejas vacío se usa la presentadora 3D incluida. Un MP4 propio permite usar tu propio avatar animado.</div></div>
 <div class="field"><label for="brand">Marca</label><input id="brand" value="AZTV" maxlength="80"></div>
 <div class="field"><label for="cta">Llamado a la acción</label><input id="cta" value="Descárgala hoy" maxlength="120"></div>
 <div class="field"><label for="voice">Voz</label><select id="voice"><option value="male" selected>Masculina</option><option value="female">Femenina</option></select></div>
 <div class="field"><label for="voiceSpeed">Ritmo de voz</label><select id="voiceSpeed"><option value="normal" selected>Normal — mejor pronunciación</option><option value="fast">Rápido</option></select></div>
-<div class="field"><label for="visualMode">Estilo del video</label><select id="visualMode"><option value="cinematic">Cinemático: avatar + escenas visuales</option><option value="avatar">Solo avatar hablando</option></select><div class="example">El modo cinematográfico alterna la presentadora con familia viendo TV, amigos disfrutando contenido y una usuaria con tablet.</div></div>
+<div class="field"><label for="visualMode">Estilo del video</label><select id="visualMode"><option value="cinematic">Cinemático: avatar + escenas visuales</option><option value="avatar">Solo avatar hablando</option></select><div class="example">La presentadora repetirá exactamente el guion escrito y puede alternar con escenas visuales.</div></div>
+</div>
 <div id="notice"></div>
-<button id="send">Generar promoción rápida</button>
+<button id="send">Generar video local</button>
 </div>
 <div id="chat"></div>
 </div>
 <script>
+const modeEl=document.getElementById('mode');
 const msgEl=document.getElementById('message');
+const messageLabel=document.getElementById('messageLabel');
+const messageHelp=document.getElementById('messageHelp');
+const freeFields=document.getElementById('freeFields');
+const avatarFields=document.getElementById('avatarFields');
+const freeStyleEl=document.getElementById('freeStyle');
+const orientationEl=document.getElementById('orientation');
 const avatarUrlEl=document.getElementById('avatarUrl');
 const brandEl=document.getElementById('brand');
 const ctaEl=document.getElementById('cta');
@@ -43,22 +54,20 @@ const chat=document.getElementById('chat');
 const notice=document.getElementById('notice');
 const accessParams=new URLSearchParams(window.location.search);
 const privateAccess=accessParams.get('access')||sessionStorage.getItem('aztv_studio_access')||'';
-if(privateAccess){
-  sessionStorage.setItem('aztv_studio_access',privateAccess);
-  if(accessParams.has('access'))history.replaceState(null,document.title,window.location.pathname);
-}
+if(privateAccess){sessionStorage.setItem('aztv_studio_access',privateAccess);if(accessParams.has('access'))history.replaceState(null,document.title,window.location.pathname);}
 let jobs=JSON.parse(localStorage.getItem('aztv_studio_jobs')||'[]');
 const videoUrls=new Map();
 const loadingVideos=new Set();
+function syncMode(){const free=modeEl.value==='free_video';freeFields.hidden=!free;avatarFields.hidden=free;messageLabel.textContent=free?'Describe el video que quieres crear':'Guion exacto de la presentadora';msgEl.placeholder=free?'Ejemplo: Una casa colorida canta bajo la lluvia mientras la cámara gira alrededor, estilo dibujos animados.':'Escribe las palabras exactas que debe decir. Ejemplo: Disfruta tus canales favoritos donde quieras. Descarga AZTV hoy.';messageHelp.textContent=free?'Puedes pedir una casa cantando, dibujos animados, personas, animales, objetos o cualquier escena. Describe el sujeto, la acción, el lugar y el estilo.':'La presentadora repetirá exactamente este texto. No necesitas escribir “que diga”.';sendEl.textContent=free?'Generar video local':'Generar video de avatar';}
 function headers(contentType=true){const h={};if(contentType)h['Content-Type']='application/json';if(privateAccess)h['X-Studio-Access']=privateAccess;return h;}
 function save(){localStorage.setItem('aztv_studio_jobs',JSON.stringify(jobs.slice(0,30)));}
 function esc(s){return(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
 async function loadVideo(j){if(videoUrls.has(j.id)||loadingVideos.has(j.id))return;loadingVideos.add(j.id);try{const r=await fetch('/jobs/'+j.id+'/video',{headers:headers(false),credentials:'same-origin'});if(!r.ok)throw new Error('No se pudo abrir el video ('+r.status+').');videoUrls.set(j.id,URL.createObjectURL(await r.blob()));render();}catch(e){notice.textContent=e.message;}finally{loadingVideos.delete(j.id);}}
-function render(){chat.innerHTML='';jobs.forEach(j=>{const e=document.createElement('div');e.className='msg';const cls=j.status==='done'?'done':j.status==='error'?'error':j.status==='running'?'running':'queued';let media='';if(j.status==='done'){const url=videoUrls.get(j.id);if(url)media='<video controls playsinline src="'+url+'"></video><a class="download" href="'+url+'" download="promocion.mp4">Descargar MP4</a>';else{media='<div>Preparando video...</div>';loadVideo(j);}}if(j.status==='error')media='<div style="color:#fca5a5;margin-top:8px">'+esc(j.error||'Error')+'</div>';e.innerHTML='<span class="badge '+cls+'">'+esc(j.stage||j.status||'queued')+'</span><div>'+esc(j.message)+'</div>'+media+'<div class="small">'+esc(j.id)+'</div>';chat.appendChild(e);});}
+function render(){chat.innerHTML='';jobs.forEach(j=>{const e=document.createElement('div');e.className='msg';const cls=j.status==='done'?'done':j.status==='error'?'error':j.status==='running'?'running':'queued';let media='';if(j.status==='done'){const url=videoUrls.get(j.id);if(url)media='<video controls playsinline src="'+url+'"></video><a class="download" href="'+url+'" download="video.mp4">Descargar MP4</a>';else{media='<div>Preparando video...</div>';loadVideo(j);}}if(j.status==='error')media='<div style="color:#fca5a5;margin-top:8px">'+esc(j.error||'Error')+'</div>';e.innerHTML='<span class="badge '+cls+'">'+esc(j.stage||j.status||'queued')+'</span><div>'+esc(j.message)+'</div>'+media+'<div class="small">'+esc(j.id)+'</div>';chat.appendChild(e);});}
 async function poll(){let changed=false;for(const j of jobs){if(!j.id||j.status==='done'||j.status==='error')continue;try{const r=await fetch('/jobs/'+j.id,{headers:headers(false),credentials:'same-origin'});if(!r.ok)continue;const d=await r.json();if(j.status!==d.status||j.stage!==(d.stage||d.status)||j.error!==(d.error||''))changed=true;j.status=d.status||j.status;j.stage=d.stage||d.status||j.stage;j.error=d.error||'';}catch(e){}}if(changed){save();render();}}
-setInterval(poll,6000);
-sendEl.onclick=async()=>{const message=msgEl.value.trim();if(!message){notice.textContent='Escribe el guion exacto de la presentadora.';return;}sendEl.disabled=true;notice.textContent='Enviando...';try{const body={message,avatar_url:avatarUrlEl.value.trim()||null,brand_text:brandEl.value.trim()||'AZTV',cta_text:ctaEl.value.trim(),voice:voiceEl.value,voice_speed:voiceSpeedEl.value,visual_mode:visualModeEl.value};const r=await fetch('/studio/request',{method:'POST',headers:headers(),body:JSON.stringify(body),credentials:'same-origin'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo iniciar la promoción');jobs.unshift({id:d.id,message,status:d.status||'queued',stage:'queued'});save();render();msgEl.value='';notice.textContent='Promoción en cola. Puedes dejar esta página abierta.';}catch(e){notice.textContent=e.message;}finally{sendEl.disabled=false;}};
+modeEl.onchange=syncMode;setInterval(poll,6000);
+sendEl.onclick=async()=>{const message=msgEl.value.trim();const free=modeEl.value==='free_video';if(!message){notice.textContent=free?'Describe el video que quieres crear.':'Escribe el guion exacto de la presentadora.';return;}sendEl.disabled=true;notice.textContent=free?'Enviando video local a la RTX 3060...':'Enviando...';try{const body={message,mode:modeEl.value,free_style:freeStyleEl.value,orientation:orientationEl.value,avatar_url:avatarUrlEl.value.trim()||null,brand_text:brandEl.value.trim()||'AZTV',cta_text:ctaEl.value.trim(),voice:voiceEl.value,voice_speed:voiceSpeedEl.value,visual_mode:visualModeEl.value};const r=await fetch('/studio/request',{method:'POST',headers:headers(),body:JSON.stringify(body),credentials:'same-origin'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo iniciar el video');jobs.unshift({id:d.id,message,status:d.status||'queued',stage:'queued'});save();render();msgEl.value='';notice.textContent=free?'Video local en cola. Puedes dejar esta página abierta.':'Video de avatar en cola. Puedes dejar esta página abierta.';}catch(e){notice.textContent=e.message;}finally{sendEl.disabled=false;}};
 window.addEventListener('beforeunload',()=>videoUrls.forEach(url=>URL.revokeObjectURL(url)));
-render();poll();
+syncMode();render();poll();
 </script>
 </body></html>
