@@ -46,10 +46,12 @@ FAST_PROMO_AVATAR_PATH = Path(
 ).resolve()
 FAST_VOICE_LENGTH_SCALE = float(os.getenv("FAST_VOICE_LENGTH_SCALE", "0.84"))
 NORMAL_VOICE_LENGTH_SCALE = float(os.getenv("NORMAL_VOICE_LENGTH_SCALE", "1.0"))
+# Full-screen human-centered visual cutaways alternate with the talking avatar.
+# Keeping them as bundled images avoids another GPU video model on 12 GB cards.
 CINEMATIC_SCENE_PATHS = (
-    Path(__file__).with_name("assets") / "cinematic-neon-corridor.jpg",
-    Path(__file__).with_name("assets") / "cinematic-content-panels.jpg",
-    Path(__file__).with_name("assets") / "cinematic-devices.jpg",
+    Path(__file__).with_name("assets") / "cinematic-family-living-room.jpg",
+    Path(__file__).with_name("assets") / "cinematic-friends-watch-party.jpg",
+    Path(__file__).with_name("assets") / "cinematic-mobile-viewer.jpg",
 )
 
 JOBS_DIR = DATA_DIR / "jobs"
