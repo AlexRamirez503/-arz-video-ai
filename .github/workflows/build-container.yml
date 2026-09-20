@@ -57,6 +57,7 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:9b42416de0269e99a3c7bfa900cf65cf417e6323
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=ARZ Video AI - fast animated avatar, MuseTalk 1.5, Piper, and FastAPI
