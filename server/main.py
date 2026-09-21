@@ -43,7 +43,7 @@ PORT = int(os.getenv("API_PORT", "8000"))
 BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "8"))
 FPS = int(os.getenv("MUSETALK_FPS", "25"))
 WAN_HOME = Path(os.getenv("WAN_HOME", "/opt/Wan2.1")).resolve()
-WAN_PYTHON = Path(os.getenv("WAN_PYTHON", "/opt/wan-venv/bin/python")).resolve()
+WAN_PYTHON = Path(os.getenv("WAN_PYTHON", "/opt/wan-venv/bin/python"))
 WAN_MODEL_DIR = Path(
     os.getenv("WAN_MODEL_DIR", "/data/models/Wan2.1-T2V-1.3B")
 ).resolve()
