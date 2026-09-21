@@ -62,7 +62,9 @@ RUN git clone https://github.com/Wan-Video/Wan2.1.git /opt/Wan2.1 && \
     /opt/wan-venv/bin/pip install \
       torch==2.4.1 torchvision==0.19.1 \
       --index-url https://download.pytorch.org/whl/cu118 && \
-    /opt/wan-venv/bin/pip install -r /tmp/requirements-wan.txt
+    /opt/wan-venv/bin/pip install -r /tmp/requirements-wan.txt && \
+    /opt/wan-venv/bin/pip install --upgrade "easydict==1.13" && \
+    /opt/wan-venv/bin/python -c "import easydict, einops, ftfy, imageio; print('Wan runtime dependencies verified')"
 
 # Download only the weights used by MuseTalk 1.5 inference.
 RUN mkdir -p models/musetalkV15 models/sd-vae models/whisper models/dwpose models/face-parse-bisent && \
